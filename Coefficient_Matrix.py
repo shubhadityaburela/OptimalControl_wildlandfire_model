@@ -38,19 +38,58 @@ class CoefficientMatrix:
         self.Grad_Eta = 0
         self.Div_Eta = 0
 
+        if periodicity == "Periodic":
+            self.Grad_Xi = self.D1_periodic(self.__GradCoef, self.__Nxi, dx)
+            self.Div_Xi = self.D1_periodic(self.__DivCoef, self.__Nxi, dx)
+            if self.__Neta == 1:
+                self.Grad_Eta = 0
+                self.Div_Eta = 0
+            else:
+                self.Grad_Eta = self.D1_periodic(self.__GradCoef, self.__Neta, dy)
+                self.Div_Eta = self.D1_periodic(self.__DivCoef, self.__Neta, dy)
+        elif periodicity == "NonPeriodic":
+            self.Grad_Xi = self.D1_nonperiodic(self.__GradCoef, self.__Nxi, dx, self.__GradCoefUL, self.__GradCoefBR)
+            self.Div_Xi = self.D1_nonperiodic(self.__DivCoef, self.__Nxi, dx, self.__DivCoefUL, self.__DivCoefBR)
+            if self.__Neta == 1:
+                self.Grad_Eta = 0
+                self.Div_Eta = 0
+            else:
+                self.Grad_Eta = self.D1_nonperiodic(self.__GradCoef, self.__Neta, dy, self.__GradCoefUL,
+                                                    self.__GradCoefBR)
+                self.Div_Eta = self.D1_nonperiodic(self.__DivCoef, self.__Neta, dy, self.__DivCoefUL, self.__DivCoefBR)
+        else:
+            print('Please select either Periodic or NonPeriodic accordingly')
+
         # Create the matrices in Kronecker form
-        self.Grad_Xi_kron = self.Grad_Xi
-        self.Div_Xi_kron = self.Div_Xi
-        self.Grad_Eta_kron = self.Grad_Eta
-        self.Div_Eta_kron = self.Div_Eta
+        if self.__Neta == 1:
+            self.Grad_Xi_kron = jnp.kron(jnp.eye(self.__Neta), self.Grad_Xi)
+            self.Div_Xi_kron = jnp.kron(jnp.eye(self.__Neta), self.Div_Xi)
+            self.Grad_Eta_kron = jnp.kron(self.Grad_Eta, jnp.eye(self.__Nxi))
+            self.Div_Eta_kron = jnp.kron(self.Div_Eta, jnp.eye(self.__Nxi))
+        else:
+            self.Grad_Xi_kron = sparse.kron(sparse.eye(self.__Neta, format="csc"), self.Grad_Xi, format="csc")
+            self.Div_Xi_kron = sparse.kron(sparse.eye(self.__Neta, format="csc"), self.Div_Xi, format="csc")
+            self.Grad_Eta_kron = sparse.kron(self.Grad_Eta, sparse.eye(self.__Nxi, format="csc"), format="csc")
+            self.Div_Eta_kron = sparse.kron(self.Div_Eta, sparse.eye(self.__Nxi, format="csc"), format="csc")
 
         # Laplace matrices
-        P_Xi = 1
-        P_Eta = 1
+        if periodicity == "Periodic":
+            P_Xi = 1
+            P_Eta = 1
+        else:
+            p_Xi = sparse.eye(self.__Nxi, format="csc")
+            p_Xi[0, 0] = 0
+            p_Xi[-1, -1] = 0
+            P_Xi = sparse.kron(sparse.eye(self.__Neta, format="csc"), p_Xi, format="csc")
+
+            p_Eta = sparse.eye(self.__Neta, format="csc")
+            p_Eta[0, 0] = 0
+            p_Eta[-1, -1] = 0
+            P_Eta = sparse.kron(p_Eta, sparse.eye(self.__Nxi, format="csc"), format="csc")
 
         P = P_Xi * P_Eta
 
-        self.Laplace = self.Div_Xi_kron * P * self.Grad_Xi_kron
+        self.Laplace = self.Div_Xi_kron * P * self.Grad_Xi_kron + self.Div_Eta_kron * P * self.Grad_Eta_kron
         ########################################################
 
     def __StencilSelection(self, orderDerivative):
@@ -116,10 +155,10 @@ class CoefficientMatrix:
         diagonalLow = int(-(len(Coeffs) - 1) / 2)
         diagonalUp = int(-diagonalLow)
 
-        D_1 = sparse.BCOO.fromdense(jnp.zeros((N, N)))
+        D_1 = jnp.zeros((N, N))
 
         for k in range(diagonalLow, diagonalUp + 1):
-            D_1 = D_1 + Coeffs[k - diagonalLow] * sparse.BCOO.fromdense(jnp.diag(jnp.ones(N - abs(k)), k))
+            D_1 = D_1 + Coeffs[k - diagonalLow] * jnp.diag(jnp.ones(N - abs(k)), k)
 
         a = BlockUL.shape[0]
         b = BlockUL.shape[1]

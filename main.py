@@ -38,27 +38,27 @@ qs_target = jnp.concatenate((jnp.zeros((wf.Nxi * wf.Neta, wf.Nt)),
 #                                np.zeros((wf.Nxi * wf.Neta, wf.Nt)))
 # sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
 # sigma = np.tile(sigma, (2, 1))
-sigma = jnp.ones_like(qs_target)
+sigma = jnp.zeros_like(qs_target)
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions()
 qs = wf.TimeIntegration(q0, f, sigma)
 
-plt.ion()
-fig, ax = plt.subplots(1, 1)
-for n in range(wf.Nt):
-    ax.plot(wf.X, qs[:wf.Nxi, 0])
-    plt.draw()
-    plt.pause(0.002)
-    ax.cla()
-exit()
+# plt.ion()
+# fig, ax = plt.subplots(1, 1)
+# for n in range(wf.Nt):
+#     ax.plot(wf.X, qs[:wf.Nxi, n])
+#     plt.draw()
+#     plt.pause(0.002)
+#     ax.cla()
+# exit()
 
 
-# # Plot the results
-# pf = PlotFlow(wf.X, wf.Y, wf.t)
-# if Dimension == "1D":
-#     # Plot the Full Order Model (FOM)
-#     pf.plot1D(qs)
-# else:
-#     # Plot the Full Order Model (FOM)
-#     pf.plot2D(qs)
+# Plot the results
+pf = PlotFlow(wf.X, wf.Y, wf.t)
+if Dimension == "1D":
+    # Plot the Full Order Model (FOM)
+    pf.plot1D(qs)
+else:
+    # Plot the Full Order Model (FOM)
+    pf.plot2D(qs)

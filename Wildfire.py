@@ -13,7 +13,6 @@ import matplotlib
 matplotlib.use("TkAgg")
 
 
-
 class Wildfire:
     def __init__(self, Nxi: int, Neta: int, timesteps: int) -> None:
         # Assertion statements for checking the sanctity of the input variables
@@ -116,12 +115,14 @@ class Wildfire:
 
         # Coefficients for the terms in the equation
         Coeff_diff = self.__k
-
+        Coeff_conv_x = self.__v_x[t_step]
+        Coeff_conv_y = self.__v_y[t_step]
         Coeff_source = self.__alpha * self.__gamma
         Coeff_arrhenius = self.__alpha
         Coeff_massfrac = self.__gamma_s
 
-        Tdot = Coeff_diff * self.Mat.Laplace.dot(T) - Coeff_source * T + Coeff_arrhenius * \
+        DT = Coeff_conv_x * self.Mat.Grad_Xi_kron + Coeff_conv_y * self.Mat.Grad_Eta_kron
+        Tdot = Coeff_diff * self.Mat.Laplace.dot(T) - DT.dot(T) - Coeff_source * T + Coeff_arrhenius * \
                arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_T * f_T
         Sdot = - Coeff_massfrac * arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_S * f_S
 
@@ -135,16 +136,17 @@ class Wildfire:
         self.Mat = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
                                      Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
+        print(self.Mat.Laplace)
+        exit()
+
         # Time loop
-        qs = jnp.zeros((self.NumConservedVar * self.Nxi, self.Nt))
+        qs = jnp.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
         qs = qs.at[:, 0].set(q)
 
-        def body(n, qs):
+        def body(n, qs_):
             # Main Runge-Kutta 4 solver step
-            h = self.RK4(self.RHS, qs[:, n - 1], self.dt, 0, t_step=n, forcing=f0, sigma=sigma)
-            return qs.at[n].set(
-                jnp.concatenate((h[:self.NN], h[self.NN:]), axis=0),
-            )
+            h = self.RK4(self.RHS, qs_[:, n - 1], self.dt, 0, t_step=n, forcing=f0, sigma=sigma)
+            return qs_.at[:, n].set(h)
 
         return jax.lax.fori_loop(1, self.Nt, body, qs)
 
@@ -207,4 +209,3 @@ def Adjoint_Matrices():
     dc_dq = [c_0.jacobian([T, S]), c_1.jacobian([T, S])]
 
     return da_dq, db_dq, dc_dq
-
