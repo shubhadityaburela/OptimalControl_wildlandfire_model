@@ -1,3 +1,5 @@
+import jax.lax
+
 from Coefficient_Matrix import CoefficientMatrix
 import matplotlib
 
@@ -30,8 +32,8 @@ class Wildfire:
         self.NumConservedVar = 2
 
         # Private variables
-        self.Lxi = 1000
-        self.Leta = 1000
+        self.Lxi = 500
+        self.Leta = 500
         self.Nxi = Nxi
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
@@ -91,7 +93,7 @@ class Wildfire:
 
         return q
 
-    def RHS_primal(self, q, t, t_step=0, forcing=None, qs=None, qs_target=None, mask=None):
+    def RHS_primal(self, q, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
         # Forcing term
         if forcing is not None:
             f_T = forcing[:self.NN, t_step]
@@ -101,10 +103,12 @@ class Wildfire:
             f_S = 0
 
         # Masking
-        if mask is not None:
-            m = mask[:, t_step]
+        if sigma is not None:
+            m_T = sigma[:self.NN, t_step]
+            m_S = sigma[self.NN:, t_step]
         else:
-            m = 0
+            m_T = 0
+            m_S = 0
 
         T = q[:, 0]
         S = q[:, 1]
@@ -126,14 +130,14 @@ class Wildfire:
 
         DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
         Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_source * T + Coeff_arrhenius * \
-               arrhenius_activate * S * np.exp(-self.__mu / (T + epsilon)) + m * f_T
-        Sdot = - Coeff_massfrac * arrhenius_activate * S * np.exp(-self.__mu / (T + epsilon)) + m * f_S
+               arrhenius_activate * S * np.exp(-self.__mu / (T + epsilon)) + m_T * f_T
+        Sdot = - Coeff_massfrac * arrhenius_activate * S * np.exp(-self.__mu / (T + epsilon))
 
         qdot = np.array([Tdot, Sdot]).T
 
         return qdot
 
-    def TimeIntegration_primal(self, q, f0=None, mask=None):
+    def TimeIntegration_primal(self, q, f0=None, sigma=None):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
         self.Mat_primal = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
@@ -143,7 +147,7 @@ class Wildfire:
         qs = []
         for n in range(self.Nt):
             # Main Runge-Kutta 4 solver step
-            q = self.RK4(self.RHS_primal, q, self.dt, 0, t_step=n, forcing=f0, mask=mask)
+            q = self.RK4(self.RHS_primal, q, self.dt, 0, t_step=n, forcing=f0, sigma=sigma)
             qs.append(np.concatenate((q[:, 0], q[:, 1]), axis=0))
 
             # print('Time step: ', n)
@@ -151,6 +155,7 @@ class Wildfire:
         qs = np.asarray(qs).transpose()
 
         return qs
+
 
     def InitialConditions_adjoint(self):
         T_adj = np.zeros_like(self.X_2D)
@@ -163,7 +168,7 @@ class Wildfire:
 
         return q_adj
 
-    def RHS_adjoint(self, q_adj, t, t_step=0, forcing=None, qs=None, qs_target=None, mask=None):
+    def RHS_adjoint(self, q_adj, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
         T_adj = q_adj[:, 0]
         S_adj = q_adj[:, 1]
 
@@ -181,12 +186,12 @@ class Wildfire:
 
         DT = self.__v_x[t_step] * self.Mat_adjoint.Grad_Xi_kron + self.__v_y[t_step] * self.Mat_adjoint.Grad_Eta_kron
         T_adj_dot = - self.__k * self.Mat_adjoint.Laplace.dot(T_adj) - DT.dot(T_adj) - arrhenius_activate * \
-                    (self.__alpha * self.__mu * S * np.exp(
-                        -self.__mu / (T + epsilon)) * T_adj / (T + epsilon)**2 + self.__alpha * np.exp(
-                        -self.__mu / (T + epsilon)) * S_adj) + self.__alpha * self.__gamma * T_adj - (T - T_tar)
+                    ((self.__alpha * self.__mu * S * np.exp(
+                        -self.__mu / (T + epsilon)) * T_adj / (T + epsilon)**2) + (self.__alpha * np.exp(
+                        -self.__mu / (T + epsilon)) * S_adj)) + self.__alpha * self.__gamma * T_adj - (T - T_tar)
         S_adj_dot = arrhenius_activate * (
-                self.__gamma_s * self.__mu * S * np.exp(-self.__mu / (T + epsilon)) * T_adj / (T + epsilon)**2 +
-                self.__gamma_s * np.exp(-self.__mu / (T + epsilon)) * S_adj) - (S - S_tar)
+            (self.__gamma_s * self.__mu * S * np.exp(-self.__mu / (T + epsilon)) * T_adj / (T + epsilon)**2) +
+            (self.__gamma_s * np.exp(-self.__mu / (T + epsilon)) * S_adj))
 
         q_adj_dot = np.array([T_adj_dot, S_adj_dot]).T
 
@@ -216,11 +221,11 @@ class Wildfire:
         return qs_adj
 
     @staticmethod
-    def RK4(RHS, u0, dt, t, t_step=0, forcing=None, qs=None, qs_target=None, mask=None):
-        k1 = RHS(u0, t, t_step, forcing, qs, qs_target, mask)
-        k2 = RHS(u0 + dt / 2 * k1, t + dt / 2, t_step, forcing, qs, qs_target, mask)
-        k3 = RHS(u0 + dt / 2 * k2, t + dt / 2, t_step, forcing, qs, qs_target, mask)
-        k4 = RHS(u0 + dt * k3, t + dt, t_step, forcing, qs, qs_target, mask)
+    def RK4(RHS, u0, dt, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
+        k1 = RHS(u0, t, t_step, forcing, qs, qs_target, sigma)
+        k2 = RHS(u0 + dt / 2 * k1, t + dt / 2, t_step, forcing, qs, qs_target, sigma)
+        k3 = RHS(u0 + dt / 2 * k2, t + dt / 2, t_step, forcing, qs, qs_target, sigma)
+        k4 = RHS(u0 + dt * k3, t + dt, t_step, forcing, qs, qs_target, sigma)
 
         u1 = u0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
@@ -243,7 +248,7 @@ def Force_masking(qs, X, Y, t, dim=1):
             if j > Nt // 4:
                 mask[:, j] = 1
             else:
-                mask[:, j] = S[:, j + Nt // 4]  # uniform_filter1d(S[:, j + Nt // 4], size=100, mode="nearest")
+                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=100, mode="nearest")
     elif dim == 2:
         pass
     else:
