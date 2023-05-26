@@ -1,15 +1,17 @@
 import jax.lax
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib import cm
+import jax.numpy as jnp
+import numpy as np
+import math
 
 from Coefficient_Matrix import CoefficientMatrix
 import matplotlib
 
 matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib import cm
-import numpy as np
-import math
+
 
 
 class Wildfire:
@@ -22,8 +24,6 @@ class Wildfire:
         # First we define the public variables of the class. All the variables with "__" in front are private variables
         self.X = None
         self.Y = None
-        self.X_2D = None
-        self.Y_2D = None
         self.dx = None
         self.dy = None
         self.t = None
@@ -32,8 +32,8 @@ class Wildfire:
         self.NumConservedVar = 2
 
         # Private variables
-        self.Lxi = 500
-        self.Leta = 500
+        self.Lxi = 100
+        self.Leta = 100
         self.Nxi = Nxi
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
@@ -48,8 +48,8 @@ class Wildfire:
         # Dimensional constants used in the model
         self.__k = 0.2136
         self.__gamma_s = 0.1625
-        self.__v_x = np.zeros(self.Nt)
-        self.__v_y = np.zeros(self.Nt)
+        self.__v_x = jnp.zeros(self.Nt)
+        self.__v_y = jnp.zeros(self.Nt)
         self.__alpha = 187.93
         self.__gamma = 4.8372e-5
         self.__mu = 558.49
@@ -57,43 +57,38 @@ class Wildfire:
         self.__speedofsoundsquare = 1
 
         # Sparse matrices of the first and second order
-        self.Mat_primal = None
-        self.Mat_adjoint = None
+        self.Mat = None
 
     def Grid(self):
-        self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
+        self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
         self.dx = self.X[1] - self.X[0]
 
         if self.Neta == 1:
             self.Y = 0
             self.dy = 0
         else:
-            self.Y = np.arange(1, self.Neta + 1) * self.Leta / self.Neta
+            self.Y = jnp.arange(1, self.Neta + 1) * self.Leta / self.Neta
             self.dy = self.Y[1] - self.Y[0]
 
-        self.dt = (np.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / math.sqrt(self.__speedofsoundsquare)
-        self.t = self.dt * np.arange(self.Nt)
+        self.dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / jnp.sqrt(self.__speedofsoundsquare)
+        self.t = self.dt * jnp.arange(self.Nt)
 
-        self.X_2D, self.Y_2D = np.meshgrid(self.X, self.Y)
-        self.X_2D = np.transpose(self.X_2D)
-        self.Y_2D = np.transpose(self.Y_2D)
-
-    def InitialConditions_primal(self):
+    def InitialConditions(self):
         if self.Neta == 1:
-            T = 1200 * np.exp(-((self.X_2D - self.Lxi / 2) ** 2) / 200)
-            S = np.ones_like(T)
+            T = 1200 * jnp.exp(-((self.X - self.Lxi / 2) ** 2) / 200)
+            S = jnp.ones_like(T)
         else:
-            T = 1200 * np.exp(-(((self.X_2D - self.Lxi / 2) ** 2) / 200 + ((self.Y_2D - self.Leta / 2) ** 2) / 200))
-            S = np.ones_like(T)
+            T = 1200 * jnp.exp(-(((self.X - self.Lxi / 2) ** 2) / 200 + ((self.Y - self.Leta / 2) ** 2) / 200))
+            S = jnp.ones_like(T)
 
         # Arrange the values of T and S in 'q'
-        T = np.reshape(T, newshape=self.NN, order="F")
-        S = np.reshape(S, newshape=self.NN, order="F")
-        q = np.array([T, S]).T
+        T = jnp.reshape(T, newshape=self.NN, order="F")
+        S = jnp.reshape(S, newshape=self.NN, order="F")
+        q = jnp.array(jnp.concatenate((T, S)))
 
         return q
 
-    def RHS_primal(self, q, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
+    def RHS(self, q, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
         # Forcing term
         if forcing is not None:
             f_T = forcing[:self.NN, t_step]
@@ -110,8 +105,8 @@ class Wildfire:
             m_T = 0
             m_S = 0
 
-        T = q[:, 0]
-        S = q[:, 1]
+        T = q[:self.NN]
+        S = q[self.NN:]
 
         # This array is a masking array that becomes 1 if the T is greater than 0 and 0 if not. It activates
         # the arrhenius term
@@ -121,40 +116,37 @@ class Wildfire:
 
         # Coefficients for the terms in the equation
         Coeff_diff = self.__k
-        Coeff_conv_x = self.__v_x[t_step]
-        Coeff_conv_y = self.__v_y[t_step]
 
         Coeff_source = self.__alpha * self.__gamma
         Coeff_arrhenius = self.__alpha
         Coeff_massfrac = self.__gamma_s
 
-        DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
-        Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_source * T + Coeff_arrhenius * \
-               arrhenius_activate * S * np.exp(-self.__mu / (T + epsilon)) + m_T * f_T
-        Sdot = - Coeff_massfrac * arrhenius_activate * S * np.exp(-self.__mu / (T + epsilon))
+        Tdot = Coeff_diff * self.Mat.Laplace.dot(T) - Coeff_source * T + Coeff_arrhenius * \
+               arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_T * f_T
+        Sdot = - Coeff_massfrac * arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_S * f_S
 
-        qdot = np.array([Tdot, Sdot]).T
+        qdot = jnp.array(jnp.concatenate((Tdot, Sdot)))
 
         return qdot
 
-    def TimeIntegration_primal(self, q, f0=None, sigma=None):
+    def TimeIntegration(self, q, f0=None, sigma=None):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
-        self.Mat_primal = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
-                                            Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
+        self.Mat = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
+                                     Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Time loop
-        qs = []
-        for n in range(self.Nt):
+        qs = jnp.zeros((self.NumConservedVar * self.Nxi, self.Nt))
+        qs = qs.at[:, 0].set(q)
+
+        def body(n, qs):
             # Main Runge-Kutta 4 solver step
-            q = self.RK4(self.RHS_primal, q, self.dt, 0, t_step=n, forcing=f0, sigma=sigma)
-            qs.append(np.concatenate((q[:, 0], q[:, 1]), axis=0))
+            h = self.RK4(self.RHS, qs[:, n - 1], self.dt, 0, t_step=n, forcing=f0, sigma=sigma)
+            return qs.at[n].set(
+                jnp.concatenate((h[:self.NN], h[self.NN:]), axis=0),
+            )
 
-            # print('Time step: ', n)
-
-        qs = np.asarray(qs).transpose()
-
-        return qs
+        return jax.lax.fori_loop(1, self.Nt, body, qs)
 
     @staticmethod
     def RK4(RHS, u0, dt, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):

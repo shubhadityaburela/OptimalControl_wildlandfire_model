@@ -9,17 +9,12 @@ def Calc_Grad(lamda, sigma, f, qs_adj):
     return lamda * f + sigma * qs_adj
 
 
-def Update_Control(f, omega, lamda, sigma, q0_init, qs, qs_adj, qs_target, J_prev, max_Armijo_iter=5,
+def Update_Control(f, omega, lamda, sigma, q0_init, qs, qs_target, J_prev, max_Armijo_iter=5,
                    base_model_class=None, delta=0.5):
-    f_s = f[:int(f.shape[0]) // base_model_class.NumConservedVar, :]
-    sigma_s = sigma[:int(sigma.shape[0]) // base_model_class.NumConservedVar, :]
-    qs_adj_s = qs_adj[:int(sigma.shape[0]) // base_model_class.NumConservedVar, :]
-    qs_s = qs[:int(qs.shape[0]) // base_model_class.NumConservedVar, :]
-    qs_target_s = qs_target[:int(qs.shape[0]) // base_model_class.NumConservedVar, :]
 
     print("Armijo iterations.........")
     for k in range(max_Armijo_iter):
-        f_new = f_s - omega * Calc_Grad(lamda, sigma_s, f_s, qs_adj_s)
+        f_new = f - omega * Calc_Grad(lamda, sigma, f)
 
         # Solve the primal equation
         qs = base_model_class.TimeIntegration_primal(q0_init, np.concatenate((f_new, np.zeros_like(f_new)), axis=0),
