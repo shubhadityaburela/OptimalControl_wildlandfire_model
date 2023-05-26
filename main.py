@@ -43,16 +43,6 @@ dJ_min = 1e-10
 # sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
 # sigma = np.tile(sigma, (2, 1))
 sigma = np.ones_like(qs_target)
-# plt.ion()
-# fig, ax = plt.subplots(1, 1)
-# for n in range(wf.Nt):
-#     ax.plot(wf.X, mask[:, n])
-#     ax.plot(wf.X, (qs_target[:wf.Nxi, n] - np.min(qs_target[:wf.Nxi, n])) / (np.max(qs_target[:wf.Nxi, n]) - np.min(qs_target[:wf.Nxi, n])))
-#     ax.set_title("mask")
-#     plt.draw()
-#     plt.pause(0.02)
-#     ax.cla()
-# exit()
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
