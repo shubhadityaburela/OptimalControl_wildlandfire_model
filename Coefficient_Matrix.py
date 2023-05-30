@@ -89,7 +89,7 @@ class CoefficientMatrix:
 
         P = P_Xi * P_Eta
 
-        self.Laplace = self.Div_Xi_kron * P * self.Grad_Xi_kron + self.Div_Eta_kron * P * self.Grad_Eta_kron
+        self.Laplace = P * self.Div_Xi_kron @ self.Grad_Xi_kron + P * self.Div_Eta_kron @ self.Grad_Eta_kron
         ########################################################
 
     def __StencilSelection(self, orderDerivative):

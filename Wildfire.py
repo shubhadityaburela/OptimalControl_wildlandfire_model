@@ -31,8 +31,8 @@ class Wildfire:
         self.NumConservedVar = 2
 
         # Private variables
-        self.Lxi = 100
-        self.Leta = 100
+        self.Lxi = 500
+        self.Leta = 500
         self.Nxi = Nxi
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
@@ -87,19 +87,19 @@ class Wildfire:
 
         return q
 
-    def RHS(self, q, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
+    def RHS(self, q, f=None, sigma=None):
         # Forcing term
-        if forcing is not None:
-            f_T = forcing[:self.NN, t_step]
-            f_S = forcing[self.NN:, t_step]
+        if f is not None:
+            f_T = f[:self.NN]
+            f_S = f[self.NN:]
         else:
             f_T = 0
             f_S = 0
 
         # Masking
         if sigma is not None:
-            m_T = sigma[:self.NN, t_step]
-            m_S = sigma[self.NN:, t_step]
+            m_T = sigma[:self.NN]
+            m_S = sigma[self.NN:]
         else:
             m_T = 0
             m_S = 0
@@ -115,8 +115,8 @@ class Wildfire:
 
         # Coefficients for the terms in the equation
         Coeff_diff = self.__k
-        Coeff_conv_x = self.__v_x[t_step]
-        Coeff_conv_y = self.__v_y[t_step]
+        Coeff_conv_x = self.__v_x.at[0].get()
+        Coeff_conv_y = self.__v_y.at[0].get()
         Coeff_source = self.__alpha * self.__gamma
         Coeff_arrhenius = self.__alpha
         Coeff_massfrac = self.__gamma_s
@@ -136,26 +136,23 @@ class Wildfire:
         self.Mat = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
                                      Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
-        print(self.Mat.Laplace)
-        exit()
-
         # Time loop
         qs = jnp.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
         qs = qs.at[:, 0].set(q)
 
         def body(n, qs_):
             # Main Runge-Kutta 4 solver step
-            h = self.RK4(self.RHS, qs_[:, n - 1], self.dt, 0, t_step=n, forcing=f0, sigma=sigma)
+            h = self.RK4(self.RHS, qs_[:, n - 1], self.dt, f=f0[:, n - 1], sigma=sigma[:, n - 1])
             return qs_.at[:, n].set(h)
 
         return jax.lax.fori_loop(1, self.Nt, body, qs)
 
     @staticmethod
-    def RK4(RHS, u0, dt, t, t_step=0, forcing=None, qs=None, qs_target=None, sigma=None):
-        k1 = RHS(u0, t, t_step, forcing, qs, qs_target, sigma)
-        k2 = RHS(u0 + dt / 2 * k1, t + dt / 2, t_step, forcing, qs, qs_target, sigma)
-        k3 = RHS(u0 + dt / 2 * k2, t + dt / 2, t_step, forcing, qs, qs_target, sigma)
-        k4 = RHS(u0 + dt * k3, t + dt, t_step, forcing, qs, qs_target, sigma)
+    def RK4(RHS, u0, dt, f=None, sigma=None):
+        k1 = RHS(u0, f, sigma)
+        k2 = RHS(u0 + dt / 2 * k1, f, sigma)
+        k3 = RHS(u0 + dt / 2 * k2, f, sigma)
+        k4 = RHS(u0 + dt * k3, f, sigma)
 
         u1 = u0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 

@@ -1,37 +1,54 @@
 import numpy as np
+import jax.numpy as jnp
+
+import jax
 
 
-def Calc_Cost(q, q_target, f, lamda):
-    return (np.linalg.norm(q - q_target)) ** 2 / 2 + (lamda / 2) * (np.linalg.norm(f)) ** 2
+class Cost_functional:
+    def __init__(self, qs_target, sigma, qs_0, lamda, wf):
 
+        self.qs_target = qs_target.reshape((-1))
+        self.sigma = sigma
+        self.qs_0 = qs_0
+        self.lamda = lamda
+        self.wf = wf
 
-def Calc_Grad(lamda, sigma, f, qs_adj):
-    return lamda * f + sigma * qs_adj
+    def C_JAX(self, f):
 
+        qs = self.wf.TimeIntegration(self.qs_0, f, self.sigma)
 
-def Update_Control(f, omega, lamda, sigma, q0_init, qs, qs_target, J_prev, max_Armijo_iter=5,
-                   base_model_class=None, delta=0.5):
+        qs = qs.reshape((-1))
+        f = f.reshape((-1))
 
-    print("Armijo iterations.........")
-    for k in range(max_Armijo_iter):
-        f_new = f - omega * Calc_Grad(lamda, sigma, f)
+        return (qs - self.qs_target).T @ (qs - self.qs_target) / 2 + (self.lamda / 2) * f.T @ f
 
-        # Solve the primal equation
-        qs = base_model_class.TimeIntegration_primal(q0_init, np.concatenate((f_new, np.zeros_like(f_new)), axis=0),
-                                                     sigma_s)
-        if np.isnan(qs).any() and k < max_Armijo_iter - 1:
-            print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
-            omega = omega / 4
-        elif np.isnan(qs).any() and k == max_Armijo_iter - 1:
-            print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
-            exit()
-        else:
-            qs = qs[:int(qs.shape[0]) // base_model_class.NumConservedVar, :]
-            J = Calc_Cost(qs, qs_target_s, f_new, lamda)
-            if J < J_prev - delta * omega * np.linalg.norm(f_new) ** 2:
-                J_opt = J
-                f_opt = np.concatenate((f_new, np.zeros_like(f_new)))
-                print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt
-            elif J >= J_prev or np.isnan(J):
+    def C_JAX_cost(self, qs, f):
+        qs = qs.reshape((-1))
+        f = f.reshape((-1))
+        return (qs - self.qs_target).T @ (qs - self.qs_target) / 2 + (self.lamda / 2) * f.T @ f
+
+    def C_JAX_update(self, f, omega, dJ_dx, J_prev, max_Armijo_iter=5, delta=0.5):
+
+        print("Armijo iterations.........")
+        for k in range(max_Armijo_iter):
+            f_new = f - omega * dJ_dx
+
+            print(jnp.linalg.norm(f_new-f))
+
+            # Solve the primal equation
+            qs = self.wf.TimeIntegration(self.qs_0, f_new, self.sigma)
+            if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
+                print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
                 omega = omega / 4
+            elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
+                print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
+                exit()
+            else:
+                J = self.C_JAX_cost(qs, f_new)
+                if J < J_prev - delta * omega * f_new.T @ f_new:
+                    J_opt = J
+                    f_opt = f_new
+                    print(f"Armijo iteration converged after {k + 1} steps")
+                    return f_opt, J_opt
+                elif J >= J_prev or np.isnan(J):
+                    omega = omega / 4
