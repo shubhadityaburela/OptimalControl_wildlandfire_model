@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 Dimension = "1D"
 Nxi = 250
 Neta = 1
-Nt = 200
+Nt = 100
 
 # Wildfire solver initialization along with grid initialization
 wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
