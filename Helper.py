@@ -9,34 +9,96 @@ def Calc_Grad(lamda, sigma, f, qs_adj):
     return lamda * f + sigma * qs_adj
 
 
-def Update_Control(f, omega, lamda, sigma, q0_init, qs, qs_adj, qs_target, J_prev, max_Armijo_iter=5,
-                   base_model_class=None, delta=0.5):
-    f_s = f[:int(f.shape[0]) // base_model_class.NumConservedVar, :]
-    sigma_s = sigma[:int(sigma.shape[0]) // base_model_class.NumConservedVar, :]
-    qs_adj_s = qs_adj[:int(sigma.shape[0]) // base_model_class.NumConservedVar, :]
-    qs_s = qs[:int(qs.shape[0]) // base_model_class.NumConservedVar, :]
-    qs_target_s = qs_target[:int(qs.shape[0]) // base_model_class.NumConservedVar, :]
+def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Armijo_iter=5,
+                   wf=None, delta=0.5, ti_method="rk4"):
 
     print("Armijo iterations.........")
     for k in range(max_Armijo_iter):
-        f_new = f_s - omega * Calc_Grad(lamda, sigma_s, f_s, qs_adj_s)
+        dJ_dx = Calc_Grad(lamda, sigma, f, qs_adj)
+        f_new = f - omega * dJ_dx
 
         # Solve the primal equation
-        qs = base_model_class.TimeIntegration_primal(q0_init, np.concatenate((f_new, np.zeros_like(f_new)), axis=0),
-                                                     sigma_s)
+        qs = wf.TimeIntegration_primal(q0, f_new, sigma, ti_method=ti_method)
         if np.isnan(qs).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
-            omega = omega / 4
+            omega = omega / 2
         elif np.isnan(qs).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            qs = qs[:int(qs.shape[0]) // base_model_class.NumConservedVar, :]
-            J = Calc_Cost(qs, qs_target_s, f_new, lamda)
-            if J < J_prev - delta * omega * np.linalg.norm(f_new) ** 2:
+            J = Calc_Cost(qs, qs_target, f_new, lamda)
+            dJ = J_prev - delta * omega * np.linalg.norm(f_new) ** 2
+            if J < dJ:
                 J_opt = J
-                f_opt = np.concatenate((f_new, np.zeros_like(f_new)))
+                f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt
-            elif J >= J_prev or np.isnan(J):
-                omega = omega / 4
+                return f_opt, J_opt, jnp.linalg.norm(dJ_dx)
+            elif J >= dJ or np.isnan(J):
+                print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
+                omega = omega / 2
+
+
+
+
+from jax import jit, jacobian
+from jax.scipy.optimize import minimize
+from scipy.optimize import root
+import jax.numpy as jnp
+import jax
+
+
+# BDF4 helper functions
+def newton(f, Df=None, maxIter=10, tol=1e-14):
+
+    if Df is None:
+        Df = jacobian(f, argnums=0)
+
+    @jit
+    def solver(x0, *args, **kwargs):
+        def body(tup):
+            i, x = tup
+            update = jnp.linalg.solve(Df(x, *args, **kwargs), f(x, *args, **kwargs))
+            return i + 1, x - update
+
+        def cond(tup):
+            i, x = tup
+
+            # return jnp.less( i, maxIter )  # only check for maxIter
+
+            return jnp.logical_and(  # check maxIter and tol
+                jnp.less(i, maxIter),  # i < maxIter
+                jnp.greater(jnp.linalg.norm(f(x, *args, **kwargs)), tol)  # norm( f(x) ) > tol
+            )
+
+        i, x = jax.lax.while_loop(cond, body, (0, x0))
+
+        # jax.debug.print( '||f(x)|| = {x}', x = jnp.linalg.norm(f(x, * args, ** kwargs )))
+        # jax.debug.print( 'iter = {x}', x = i)
+        return x
+
+    return solver
+
+
+def jax_minimize(f):
+
+    @jit
+    def solver(x0, *args):
+        g = lambda x: jnp.linalg.norm(
+            f(x, *args)
+        ) ** 2
+
+        return minimize(g, x0, method='BFGS').x
+
+    return solver
+
+
+def scipy_root(f, Df=None):
+
+    if Df is None:
+        Df = jit(jacobian(f, argnums=0))
+
+    # @jit
+    def solver(x0, *args):
+        return root(f, x0, jac=Df, args=args).x
+
+    return solver
