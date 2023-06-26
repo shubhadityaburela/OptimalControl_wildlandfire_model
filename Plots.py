@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib
+import jax.numpy as jnp
 
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -74,7 +75,7 @@ class PlotFlow:
         immpath = "./plots/FOM_1D/primal/"
         os.makedirs(immpath, exist_ok=True)
 
-        T = Q[:self.Nx, :]
+        T = Q[:self.Nx, :]  # (Q[:self.Nx, :] - jnp.min(Q[:self.Nx, :])) / (jnp.max(Q[:self.Nx, :]) - jnp.min(Q[:self.Nx, :]))
         S = Q[self.Nx:, :]
 
         # Plot the snapshot matrix for conserved variables for original model

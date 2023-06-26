@@ -1,6 +1,7 @@
 import jax.lax
 import jax.numpy as jnp
 from jax.config import config
+
 config.update("jax_debug_nans", True)
 jax.config.update("jax_enable_x64", True)
 
@@ -62,8 +63,14 @@ class Wildfire:
         self.Mat_primal = None
         self.Mat_adjoint = None
 
+        # Reference variables
+        self.T_ref = self.__mu
+        self.S_ref = 1
+        self.x_ref = jnp.sqrt(self.__k * self.__mu) / jnp.sqrt(self.__alpha)
+        self.t_ref = self.__mu / self.__alpha
+
     def Grid(self):
-        self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
+        self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi / self.x_ref
         self.dx = self.X[1] - self.X[0]
 
         if self.Neta == 1:
@@ -73,13 +80,16 @@ class Wildfire:
             self.Y = jnp.arange(1, self.Neta + 1) * self.Leta / self.Neta
             self.dy = self.Y[1] - self.Y[0]
 
-        self.dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / jnp.sqrt(self.__speedofsoundsquare)
-        self.t = self.dt * jnp.arange(self.Nt)
+        dt = 1.0  # (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / jnp.sqrt(self.__speedofsoundsquare)
+        t = dt * jnp.arange(self.Nt)
+
+        self.t = t / self.t_ref
+        self.dt = self.t[1] - self.t[0]
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            T = 1200 * jnp.exp(-((self.X - self.Lxi / 2) ** 2) / 200)
-            S = jnp.ones_like(T)
+            T = 1200 * jnp.exp(-((self.X - self.Lxi / (2 * self.x_ref)) ** 2) / 200) / self.T_ref
+            S = jnp.ones_like(T) / self.S_ref
         else:
             T = 1200 * jnp.exp(-(((self.X - self.Lxi / 2) ** 2) / 200 + ((self.Y - self.Leta / 2) ** 2) / 200))
             S = jnp.ones_like(T)
@@ -120,18 +130,20 @@ class Wildfire:
         epsilon = 0.00001
 
         # Coefficients for the terms in the equation
-        Coeff_diff = self.__k
+        Coeff_diff = 1.0
+
         Coeff_conv_x = self.__v_x.at[0].get()
         Coeff_conv_y = self.__v_y.at[0].get()
-        Coeff_source = self.__alpha * self.__gamma
-        Coeff_arrhenius = self.__alpha
-        Coeff_massfrac = self.__gamma_s
 
+        Coeff_react_1 = 1.0
+        Coeff_react_2 = self.__gamma * self.__mu
+
+        Coeff_react_3 = (self.__mu * self.__gamma_s / self.__alpha)
 
         DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
-        Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_source * T + Coeff_arrhenius * \
-               arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_T * f_T
-        Sdot = - Coeff_massfrac * arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_S * f_S
+        Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_react_2 * T + \
+               Coeff_react_1 * arrhenius_activate * S * jnp.exp(-1.0 / (T + epsilon)) + m_T * f_T
+        Sdot = - Coeff_react_3 * arrhenius_activate * S * jnp.exp(-1.0 / (T + epsilon)) + m_S * f_S
 
         qdot = jnp.array(jnp.concatenate((Tdot, Sdot)))
 
@@ -166,8 +178,8 @@ class Wildfire:
             return self.bdf4(f=body, tt=self.t, x0=q0, uu=f0.T, func_args=(sigma.T,)).T
 
     def InitialConditions_adjoint(self):
-        T_adj = jnp.zeros_like(self.X)
-        S_adj = np.zeros_like(T_adj)
+        T_adj = jnp.zeros_like(self.X) / self.T_ref
+        S_adj = jnp.zeros_like(T_adj) / self.S_ref
 
         # Arrange the values of T_adj and S_adj in 'q_adj'
         T_adj = jnp.reshape(T_adj, newshape=self.NN, order="F")
@@ -184,23 +196,26 @@ class Wildfire:
         T = args[0][:self.NN]
         S = args[0][self.NN:]
 
-        T_tar = args[1][:self.NN]
-        S_tar = args[1][self.NN:]
+        T_tar = args[1][:self.NN] / self.T_ref
+        S_tar = args[1][self.NN:] / self.S_ref
 
         # This array is a masking array that becomes 1 if the T is greater than 0 and 0 if not. It activates
         # the arrhenius term
         arrhenius_activate = (T > 0).astype(int)
         # This parameter is for preventing division by 0
-        epsilon = 0.00001
+        epsilon = 0.000001
 
-        DT = self.__v_x.at[0].get() * self.Mat_adjoint.Grad_Xi_kron + self.__v_y.at[0].get() * self.Mat_adjoint.Grad_Eta_kron
-        T_adj_dot = - self.__k * self.Mat_adjoint.Laplace.dot(T_adj) - DT.dot(T_adj) - arrhenius_activate * \
-                    ((self.__alpha * self.__mu * S * jnp.exp(
-                        -self.__mu / (T + epsilon)) * T_adj / (T + epsilon) ** 2) + (self.__alpha * jnp.exp(
-                        -self.__mu / (T + epsilon)) * S_adj)) + self.__alpha * self.__gamma * T_adj - (T - T_tar)
-        S_adj_dot = arrhenius_activate * (
-                (self.__gamma_s * self.__mu * S * jnp.exp(-self.__mu / (T + epsilon)) * T_adj / (T + epsilon) ** 2) +
-                (self.__gamma_s * jnp.exp(-self.__mu / (T + epsilon)) * S_adj)) - (S - S_tar)
+        # Control parameters
+        cp_1 = self.__gamma * self.__mu
+        cp_2 = self.__mu * self.__gamma_s / self.__alpha
+
+        DT = self.__v_x.at[0].get() * self.Mat_adjoint.Grad_Xi_kron + self.__v_y.at[
+            0].get() * self.Mat_adjoint.Grad_Eta_kron
+        T_adj_dot = - self.Mat_adjoint.Laplace.dot(T_adj) - DT.dot(T_adj) - arrhenius_activate * \
+                    (S * jnp.exp(-1 / (T + epsilon)) * (1 / (T + epsilon) ** 2) * T_adj + jnp.exp(-1 / (T + epsilon))
+                     * S_adj) + cp_1 * T_adj - (T - T_tar)
+        S_adj_dot = arrhenius_activate * (cp_2 * S * jnp.exp(-1 / (T + epsilon)) * (1 / (T + epsilon) ** 2) * T_adj +
+                                          cp_2 * jnp.exp(-1 / (T + epsilon)) * S_adj) - (S - S_tar)
 
         q_adj_dot = jnp.array(jnp.concatenate((T_adj_dot, S_adj_dot)))
 
@@ -221,7 +236,7 @@ class Wildfire:
             @jax.jit
             def body(n, qs_adj_):
                 # Main Runge-Kutta 4 solver step
-                h = self.rk4(self.RHS_adjoint, qs_adj_[:, -n], -self.dt, qs[:, -(n + 1)], qs_target[:, -(n + 1)])
+                h = self.rk4(self.RHS_adjoint, qs_adj_[:, -n], -self.dt, f0[:, -(n + 1)], qs[:, -(n + 1)], qs_target[:, -(n + 1)])
                 return qs_adj_.at[:, -(n + 1)].set(h)
 
             return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
@@ -233,6 +248,15 @@ class Wildfire:
 
             return self.bdf4(f=body, tt=self.t, x0=qt_adj, uu=f0.T, func_args=(qs.T, qs_target.T), type='backward').T
 
+    def ReDim(self, qs, qs_adj):
+        qs = qs.at[:self.NN, :].set(qs.at[:self.NN, :].get() * self.T_ref)
+        qs = qs.at[self.NN:, :].set(qs.at[self.NN:, :].get() * self.S_ref)
+        qs_adj = qs_adj.at[:self.NN, :].set(qs_adj.at[:self.NN, :].get() * self.T_ref)
+        qs_adj = qs_adj.at[self.NN:, :].set(qs_adj.at[self.NN:, :].get() * self.S_ref)
+        self.X = self.X.at[:].set(self.X.at[:].get() * self.x_ref)
+        self.t = self.t.at[:].set(self.t.at[:].get() * self.t_ref)
+
+        return qs, qs_adj
 
     @staticmethod
     def rk4(RHS: callable,
@@ -295,17 +319,31 @@ class Wildfire:
                     + 3 * xj4 \
                     - 12 * dt * f(xj, uj, *args)
 
+        def m_bdf_rev(xj, xj1, xj2, xj3, xj4, uj, *args):
+            return \
+                    25 * xj \
+                    - 48 * xj1 \
+                    + 36 * xj2 \
+                    - 16 * xj3 \
+                    + 3 * xj4 \
+                    + 12 * dt * f(xj, uj, *args)
+
+
         def m_mid(xj, xjm1, ujm1, *args):
             # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
             return xj - xjm1 - dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args)  # for finer implicit midpoint
 
-        # solver_mid = jax_minimize( m_mid )
-        solver_mid = newton(m_mid)
-        # solver_mid = scipy_root( m_mid )
+        def m_mid_rev(xj, xjm1, ujm1, *args):
+            # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
+            return xj - xjm1 + dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args)  # for finer implicit midpoint
 
-        # solver_bdf = jax_minimize( m_bdf )
+        solver_mid = newton(m_mid)
+
+        solver_mid_rev = newton(m_mid_rev)
+
         solver_bdf = newton(m_bdf)
-        # solver_bdf = scipy_root( m_bdf )
+
+        solver_bdf_rev = newton(m_bdf_rev)
 
         if type == 'forward':
 
@@ -394,7 +432,8 @@ class Wildfire:
                 # jax.debug.print('jsmall = {x}', x = jsmall)
                 # jax.debug.print('writing at {x}', x = -jsmall-1)
 
-                paux = paux.at[-jsmall - 1, :].set(solver_mid(pauxp1, pauxp1, uauxp1, *tuple(ai[jsmall] for ai in func_args)))
+                paux = paux.at[-jsmall - 1, :].set(
+                    solver_mid_rev(pauxp1, pauxp1, 0, *tuple(ai[-jsmall - 1] for ai in func_args)))
 
             # jax.debug.print('paux = {x}', x = paux)
 
@@ -433,10 +472,10 @@ class Wildfire:
                 pjp2 = p[j + 2, :]
                 pjp1 = p[j + 1, :]
                 uj = uu[j + 1, :]
-                aij = tuple(ai[j] for ai in args)
+                aij = tuple(ai[j + 1] for ai in args)
                 tj = tt[j + 1]
 
-                y = solver_bdf(pjp1, pjp1, pjp2, pjp3, pjp4, uj, *aij)
+                y = solver_bdf_rev(pjp1, pjp1, pjp2, pjp3, pjp4, uj, *aij)
                 p = p.at[j, :].set(y)
 
                 # jax.debug.print('\n backward bdf: j = {x}', x = j)
@@ -473,7 +512,7 @@ def Force_masking(qs, X, Y, t, dim=1):
             if j > Nt // 4:
                 mask[:, j] = 1
             else:
-                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=100, mode="nearest")
+                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
     elif dim == 2:
         pass
     else:
