@@ -1,7 +1,6 @@
 from Wildfire import Wildfire
 from Plots import PlotFlow
-from Helper import Calc_Cost, Update_Control
-from Wildfire import Adjoint_Matrices, Force_masking
+from Helper import Calc_Cost, Update_Control, Force_masking
 import numpy as np
 import sys
 import os
@@ -26,25 +25,51 @@ Nt = 200
 wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
 wf.Grid()
 tm = "bdf4"
+f = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
+qs_target = jnp.concatenate((20 * jnp.ones((wf.Nxi * wf.Neta, wf.Nt)),
+                            jnp.ones((wf.Nxi * wf.Neta, wf.Nt))), axis=0)  # Target value of the variables
+
+impath = "./data/"
+os.makedirs(impath, exist_ok=True)
+calc_sigma = True
+if calc_sigma:
+    f_ = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
+    s_ = jnp.zeros_like(qs_target)
+    qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_, s_, ti_method="rk4")
+    sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
+    sigma = jnp.tile(sigma, (2, 1))
+    jnp.save(impath + 'sigma.npy', sigma)
+    sigma = jnp.load(impath + 'sigma.npy')
+
+    # plt.ion()
+    # fig, ax = plt.subplots(1, 1)
+    # for n in range(wf.Nt):
+    #     ax.plot(wf.X, sigma[wf.Nxi:, n], label="sigma")
+    #     ax.plot(wf.X, qs[wf.Nxi:, n], label="S")
+    #     ax.set_title("mask")
+    #     ax.legend()
+    #     plt.draw()
+    #     plt.pause(1)
+    #     ax.cla()
+
+    # exit()
+else:
+    sigma = jnp.load(impath + 'sigma.npy')
 
 # Optimal control
 max_opt_steps = 2000
 verbose = True
-lamda = 10.0  # regularization parameter
-omega = 5e-3  # initial step size for gradient update
-
-f = 1.0 * jnp.ones((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
-qs_target = jnp.concatenate((jnp.zeros((wf.Nxi * wf.Neta, wf.Nt)),
-                            jnp.ones((wf.Nxi * wf.Neta, wf.Nt))), axis=0)  # Target value of the variables
-sigma = jnp.ones_like(qs_target)
-
-J_list = []  # Collecting cost functional over the optimization steps
+lamda = 1  # regularization parameter
+omega = 1e-2  # initial step size for gradient update
 dJ_min = 1e-10
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
 q0_adj = wf.InitialConditions_adjoint()
+J_list = []  # Collecting cost functional over the optimization steps
 
+plt.ion()
+fig, ax = plt.subplots(1, 2)
 for opt_step in range(max_opt_steps):
     '''
     Forward calculation 
@@ -60,19 +85,17 @@ for opt_step in range(max_opt_steps):
     Objective and costs for control
     '''
     J = Calc_Cost(qs, qs_target, f, lamda)
-    # if opt_step > 0:
-    #     dJ = (J - J_list[-1]) / J_list[0]
-    #     # if verbose: print("Objective J= %1.3e" % J)
-    #     if abs(dJ) < dJ_min: break  # stop if we are close to the minimum
+    if opt_step > 0:
+        dJ = (J - J_list[-1]) / J_list[0]
+        # if verbose: print("Objective J= %1.3e" % J)
+        if abs(dJ) < dJ_min:
+            if verbose : print("dJ turns very small thus quitting...")
+            break  # stop if we are close to the minimum
     J_list.append(J)
 
     '''
     Adjoint calculation
     '''
-    # if tm == "rk4":
-    #     print("Use bdf4 instead!!!")
-    #     exit()
-    # elif tm == "bdf4":
     time_odeint = perf_counter()  # save timing
     qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
@@ -93,6 +116,22 @@ for opt_step in range(max_opt_steps):
     if opt_step == max_opt_steps - 1:
         print('warning maximal number of steps reached',
               "Objective J= %1.3e" % J)
+
+    ax[0].pcolormesh(qs[:wf.Nxi, :].T, cmap='YlOrRd')
+    ax[0].axis('auto')
+    ax[0].set_title("T")
+    ax[0].set_yticks([], [])
+    ax[0].set_xticks([], [])
+    ax[1].pcolormesh(qs[wf.Nxi:, :].T, cmap='YlGn')
+    ax[1].axis('auto')
+    ax[1].set_title("S")
+    ax[1].set_yticks([], [])
+    ax[1].set_xticks([], [])
+
+    plt.draw()
+    plt.pause(0.5)
+    ax[0].cla()
+    ax[1].cla()
 
 if J > J_list[0]:
     print("optimization failed, Objective J/J[0] = %1.3f, J= %1.3e" % (J / J_list[0], J))

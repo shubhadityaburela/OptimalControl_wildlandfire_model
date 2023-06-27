@@ -40,7 +40,7 @@ class Wildfire:
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
         self.Nt = timesteps
-        self.cfl = 0.5
+        self.cfl = 1.0
 
         self.M = self.NumConservedVar * self.Nxi * self.Neta
 
@@ -167,7 +167,7 @@ class Wildfire:
 
     def InitialConditions_adjoint(self):
         T_adj = jnp.zeros_like(self.X)
-        S_adj = np.zeros_like(T_adj)
+        S_adj = jnp.zeros_like(T_adj)
 
         # Arrange the values of T_adj and S_adj in 'q_adj'
         T_adj = jnp.reshape(T_adj, newshape=self.NN, order="F")
@@ -295,17 +295,30 @@ class Wildfire:
                     + 3 * xj4 \
                     - 12 * dt * f(xj, uj, *args)
 
+        def m_bdf_rev(xj, xj1, xj2, xj3, xj4, uj, *args):
+            return \
+                    25 * xj \
+                    - 48 * xj1 \
+                    + 36 * xj2 \
+                    - 16 * xj3 \
+                    + 3 * xj4 \
+                    + 12 * dt * f(xj, uj, *args)
+
         def m_mid(xj, xjm1, ujm1, *args):
             # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
             return xj - xjm1 - dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args)  # for finer implicit midpoint
 
-        # solver_mid = jax_minimize( m_mid )
-        solver_mid = newton(m_mid)
-        # solver_mid = scipy_root( m_mid )
+        def m_mid_rev(xj, xjm1, ujm1, *args):
+            # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
+            return xj - xjm1 + dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args)  # for finer implicit midpoint
 
-        # solver_bdf = jax_minimize( m_bdf )
+        solver_mid = newton(m_mid)
+
+        solver_mid_rev = newton(m_mid_rev)
+
         solver_bdf = newton(m_bdf)
-        # solver_bdf = scipy_root( m_bdf )
+
+        solver_bdf_rev = newton(m_bdf_rev)
 
         if type == 'forward':
 
@@ -394,7 +407,8 @@ class Wildfire:
                 # jax.debug.print('jsmall = {x}', x = jsmall)
                 # jax.debug.print('writing at {x}', x = -jsmall-1)
 
-                paux = paux.at[-jsmall - 1, :].set(solver_mid(pauxp1, pauxp1, uauxp1, *tuple(ai[jsmall] for ai in func_args)))
+                paux = paux.at[-jsmall - 1, :].set(
+                    solver_mid_rev(pauxp1, pauxp1, 0, *tuple(ai[-jsmall - 1] for ai in func_args)))
 
             # jax.debug.print('paux = {x}', x = paux)
 
@@ -433,10 +447,10 @@ class Wildfire:
                 pjp2 = p[j + 2, :]
                 pjp1 = p[j + 1, :]
                 uj = uu[j + 1, :]
-                aij = tuple(ai[j] for ai in args)
+                aij = tuple(ai[j + 1] for ai in args)
                 tj = tt[j + 1]
 
-                y = solver_bdf(pjp1, pjp1, pjp2, pjp3, pjp4, uj, *aij)
+                y = solver_bdf_rev(pjp1, pjp1, pjp2, pjp3, pjp4, uj, *aij)
                 p = p.at[j, :].set(y)
 
                 # jax.debug.print('\n backward bdf: j = {x}', x = j)
@@ -455,52 +469,3 @@ class Wildfire:
             # jax.debug.print('\np = {x}\n', x = p)
 
             return p
-
-
-def Force_masking(qs, X, Y, t, dim=1):
-    from scipy.signal import savgol_filter
-    from scipy.ndimage import uniform_filter1d
-
-    Nx = len(X)
-    Nt = len(t)
-
-    T = qs[:Nx, :]
-    S = qs[Nx:, :]
-
-    if dim == 1:
-        mask = np.zeros((Nx, Nt))
-        for j in reversed(range(Nt)):
-            if j > Nt // 4:
-                mask[:, j] = 1
-            else:
-                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=100, mode="nearest")
-    elif dim == 2:
-        pass
-    else:
-        print('Implement masking first!!!!!!!')
-
-    return mask
-
-
-def Adjoint_Matrices():
-    import sympy as sy
-    from sympy.physics.units.quantities import Quantity
-
-    k = Quantity('k')
-    al = Quantity('alpha')
-    g = Quantity('gamma')
-    gs = Quantity('gamma_s')
-    m = Quantity('mu')
-
-    T, S = sy.symbols('T S')
-
-    a = sy.Matrix([k * T, 0])
-    b = sy.Matrix([T, 0])
-    c_0 = sy.Matrix([(al * S * sy.exp(-m / T) - al * g * T), -S * sy.exp(-m / T) * gs])
-    c_1 = sy.Matrix([- al * g * T, 0])
-
-    da_dq = a.jacobian([T, S])
-    db_dq = b.jacobian([T, S])
-    dc_dq = [c_0.jacobian([T, S]), c_1.jacobian([T, S])]
-
-    return da_dq, db_dq, dc_dq

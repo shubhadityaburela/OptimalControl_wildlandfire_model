@@ -2,11 +2,11 @@ import numpy as np
 
 
 def Calc_Cost(q, q_target, f, lamda):
-    return (np.linalg.norm(q - q_target)) ** 2 / 2 + (lamda / 2) * (np.linalg.norm(f)) ** 2
+    return (jnp.linalg.norm(q - q_target)) ** 2 / 2 + (lamda / 2) * (jnp.linalg.norm(f)) ** 2
 
 
 def Calc_Grad(lamda, sigma, f, qs_adj):
-    return lamda * f + sigma * qs_adj
+    return lamda * f + jnp.multiply(sigma, qs_adj)
 
 
 def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Armijo_iter=5,
@@ -19,21 +19,21 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
 
         # Solve the primal equation
         qs = wf.TimeIntegration_primal(q0, f_new, sigma, ti_method=ti_method)
-        if np.isnan(qs).any() and k < max_Armijo_iter - 1:
+        if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif np.isnan(qs).any() and k == max_Armijo_iter - 1:
+        elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
             J = Calc_Cost(qs, qs_target, f_new, lamda)
-            dJ = J_prev - delta * omega * np.linalg.norm(f_new) ** 2
+            dJ = J_prev - delta * omega * jnp.linalg.norm(f_new) ** 2
             if J < dJ:
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
                 return f_opt, J_opt, jnp.linalg.norm(dJ_dx)
-            elif J >= dJ or np.isnan(J):
+            elif J >= dJ or jnp.isnan(J):
                 print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
                 omega = omega / 2
 
@@ -102,3 +102,52 @@ def scipy_root(f, Df=None):
         return root(f, x0, jac=Df, args=args).x
 
     return solver
+
+
+def Force_masking(qs, X, Y, t, dim=1):
+    from scipy.signal import savgol_filter
+    from scipy.ndimage import uniform_filter1d
+
+    Nx = len(X)
+    Nt = len(t)
+
+    T = qs[:Nx, :]
+    S = qs[Nx:, :]
+
+    if dim == 1:
+        mask = np.zeros((Nx, Nt))
+        for j in reversed(range(Nt)):
+            if j > Nt // 4:
+                mask[:, j] = 1
+            else:
+                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
+    elif dim == 2:
+        pass
+    else:
+        print('Implement masking first!!!!!!!')
+
+    return mask
+
+
+def Adjoint_Matrices():
+    import sympy as sy
+    from sympy.physics.units.quantities import Quantity
+
+    k = Quantity('k')
+    al = Quantity('alpha')
+    g = Quantity('gamma')
+    gs = Quantity('gamma_s')
+    m = Quantity('mu')
+
+    T, S = sy.symbols('T S')
+
+    a = sy.Matrix([k * T, 0])
+    b = sy.Matrix([T, 0])
+    c_0 = sy.Matrix([(al * S * sy.exp(-m / T) - al * g * T), -S * sy.exp(-m / T) * gs])
+    c_1 = sy.Matrix([- al * g * T, 0])
+
+    da_dq = a.jacobian([T, S])
+    db_dq = b.jacobian([T, S])
+    dc_dq = [c_0.jacobian([T, S]), c_1.jacobian([T, S])]
+
+    return da_dq, db_dq, dc_dq
