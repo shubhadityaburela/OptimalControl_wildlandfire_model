@@ -1,19 +1,19 @@
 import jax.lax
+import jax.numpy as jnp
+from jax.config import config
+config.update("jax_debug_nans", True)
+jax.config.update("jax_enable_x64", True)
+
+from Coefficient_Matrix import CoefficientMatrix
+import matplotlib
+
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import cm
 import numpy as np
 import math
-import jax.numpy as jnp
-from jax.config import config
-import matplotlib
-import jax.lax
-from Coefficient_Matrix import CoefficientMatrix
-
-config.update("jax_enable_x64", True)  # double precision
-
-matplotlib.use("TkAgg")
 
 
 class Wildfire:
@@ -34,8 +34,8 @@ class Wildfire:
         self.NumConservedVar = 2
 
         # Private variables
-        self.Lxi = 100
-        self.Leta = 100
+        self.Lxi = 250
+        self.Leta = 250
         self.Nxi = Nxi
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
@@ -59,7 +59,8 @@ class Wildfire:
         self.__speedofsoundsquare = 1
 
         # Sparse matrices of the first and second order
-        self.Mat = None
+        self.Mat_primal = None
+        self.Mat_adjoint = None
 
     def Grid(self):
         self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
@@ -83,14 +84,16 @@ class Wildfire:
             T = 1200 * jnp.exp(-(((self.X - self.Lxi / 2) ** 2) / 200 + ((self.Y - self.Leta / 2) ** 2) / 200))
             S = jnp.ones_like(T)
 
-        # Arrange the values of T and S in 'q'
+            # Arrange the values of T and S in 'q'
         T = jnp.reshape(T, newshape=self.NN, order="F")
         S = jnp.reshape(S, newshape=self.NN, order="F")
         q = jnp.array(jnp.concatenate((T, S)))
 
         return q
 
-    def RHS(self, q, f=None, sigma=None):
+    def RHS(self, q, f, *args):
+        sigma = args[0]
+
         # Forcing term
         if f is not None:
             f_T = f[:self.NN]
@@ -124,8 +127,9 @@ class Wildfire:
         Coeff_arrhenius = self.__alpha
         Coeff_massfrac = self.__gamma_s
 
-        DT = Coeff_conv_x * self.Mat.Grad_Xi_kron + Coeff_conv_y * self.Mat.Grad_Eta_kron
-        Tdot = Coeff_diff * self.Mat.Laplace.dot(T) - DT.dot(T) - Coeff_source * T + Coeff_arrhenius * \
+
+        DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
+        Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_source * T + Coeff_arrhenius * \
                arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_T * f_T
         Sdot = - Coeff_massfrac * arrhenius_activate * S * jnp.exp(-self.__mu / (T + epsilon)) + m_S * f_S
 
@@ -136,35 +140,43 @@ class Wildfire:
     def TimeIntegration(self, q0, f0=None, sigma=None, ti_method="rk4"):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
-        self.Mat = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
-                                     Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
+        self.Mat_primal = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
+                                            Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
+        # Time loop
         if ti_method == "rk4":
             # Time loop
             qs = jnp.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
             qs = qs.at[:, 0].set(q0)
 
+            @jax.jit
             def body(n, qs_):
                 # Main Runge-Kutta 4 solver step
-                h = self.rk4(self.RHS, qs_[:, n - 1], dt=self.dt, f=f0[:, n], sigma=sigma[:, n])
+                h = self.rk4(self.RHS, qs_[:, n - 1], self.dt, f0[:, n], sigma[:, n])
                 return qs_.at[:, n].set(h)
 
             return jax.lax.fori_loop(1, self.Nt, body, qs)
 
         elif ti_method == "bdf4":
-            # @jax.jit
-            def body(q, f, sigma):
-                return self.RHS(q, f=f, sigma=sigma)
+
+            @jax.jit
+            def body(x, u, *args):
+                return self.RHS(x, u, *args)
 
             return self.bdf4(f=body, tt=self.t, x0=q0, uu=f0.T, func_args=(sigma.T,)).T
 
 
     @staticmethod
-    def rk4(RHS, u0, dt, f=None, sigma=None):
-        k1 = RHS(u0, f, sigma)
-        k2 = RHS(u0 + dt / 2 * k1, f, sigma)
-        k3 = RHS(u0 + dt / 2 * k2, f, sigma)
-        k4 = RHS(u0 + dt * k3, f, sigma)
+    def rk4(RHS: callable,
+            u0: jnp.ndarray,
+            dt,
+            *args
+            ) -> jnp.ndarray:
+
+        k1 = RHS(u0, *args)
+        k2 = RHS(u0 + dt / 2 * k1, *args)
+        k3 = RHS(u0 + dt / 2 * k2, *args)
+        k4 = RHS(u0 + dt * k3, *args)
 
         u1 = u0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
@@ -215,17 +227,30 @@ class Wildfire:
                     + 3 * xj4 \
                     - 12 * dt * f(xj, uj, *args)
 
+        def m_bdf_rev(xj, xj1, xj2, xj3, xj4, uj, *args):
+            return \
+                    25 * xj \
+                    - 48 * xj1 \
+                    + 36 * xj2 \
+                    - 16 * xj3 \
+                    + 3 * xj4 \
+                    + 12 * dt * f(xj, uj, *args)
+
         def m_mid(xj, xjm1, ujm1, *args):
             # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
             return xj - xjm1 - dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args)  # for finer implicit midpoint
 
-        # solver_mid = jax_minimize( m_mid )
-        solver_mid = newton(m_mid)
-        # solver_mid = scipy_root( m_mid )
+        def m_mid_rev(xj, xjm1, ujm1, *args):
+            # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
+            return xj - xjm1 + dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args)  # for finer implicit midpoint
 
-        # solver_bdf = jax_minimize( m_bdf )
+        solver_mid = newton(m_mid)
+
+        solver_mid_rev = newton(m_mid_rev)
+
         solver_bdf = newton(m_bdf)
-        # solver_bdf = scipy_root( m_bdf )
+
+        solver_bdf_rev = newton(m_bdf_rev)
 
         if type == 'forward':
 
@@ -314,7 +339,8 @@ class Wildfire:
                 # jax.debug.print('jsmall = {x}', x = jsmall)
                 # jax.debug.print('writing at {x}', x = -jsmall-1)
 
-                paux = paux.at[-jsmall - 1, :].set(solver_mid(pauxp1, pauxp1, uauxp1))
+                paux = paux.at[-jsmall - 1, :].set(
+                    solver_mid_rev(pauxp1, pauxp1, 0, *tuple(ai[-jsmall - 1] for ai in func_args)))
 
             # jax.debug.print('paux = {x}', x = paux)
 
@@ -346,16 +372,17 @@ class Wildfire:
             # after that bdf method
 
             def body(tup):
-                j, p, uu = tup
+                j, p, uu, args = tup
 
                 pjp4 = p[j + 4, :]
                 pjp3 = p[j + 3, :]
                 pjp2 = p[j + 2, :]
                 pjp1 = p[j + 1, :]
                 uj = uu[j + 1, :]
+                aij = tuple(ai[j + 1] for ai in args)
                 tj = tt[j + 1]
 
-                y = solver_bdf(pjp1, pjp1, pjp2, pjp3, pjp4, uj)
+                y = solver_bdf_rev(pjp1, pjp1, pjp2, pjp3, pjp4, uj, *aij)
                 p = p.at[j, :].set(y)
 
                 # jax.debug.print('\n backward bdf: j = {x}', x = j)
@@ -363,40 +390,14 @@ class Wildfire:
                 # jax.debug.print('j = {x}', x = j)
                 # jax.debug.print('||residual|| = {x}', x = jnp.linalg.norm(m_bdf(y,pjp1,pjp2,pjp3,pjp4,uj)))
 
-                return j - 1, p, uu
+                return j - 1, p, uu, args
 
             def cond(tup):
                 j = tup[0]
                 return jnp.greater(j, -1)
 
-            _, p, _ = jax.lax.while_loop(cond, body, (nt - 5, p, uu))
+            _, p, _, _ = jax.lax.while_loop(cond, body, (nt - 5, p, uu, func_args))
 
             # jax.debug.print('\np = {x}\n', x = p)
 
             return p
-
-
-def Force_masking(qs, X, Y, t, dim=1):
-    from scipy.signal import savgol_filter
-    from scipy.ndimage import uniform_filter1d
-
-    Nx = len(X)
-    Nt = len(t)
-
-    T = qs[:Nx, :]
-    S = qs[Nx:, :]
-
-    if dim == 1:
-        mask = np.zeros((Nx, Nt))
-        for j in reversed(range(Nt)):
-            if j > Nt // 4:
-                mask[:, j] = 1
-            else:
-                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=100, mode="nearest")
-    elif dim == 2:
-        pass
-    else:
-        print('Implement masking first!!!!!!!')
-
-    return mask
-

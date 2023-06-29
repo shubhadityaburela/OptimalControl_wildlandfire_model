@@ -28,7 +28,7 @@ class Cost_functional:
         f = f.reshape((-1))
         return (qs - self.qs_target).T @ (qs - self.qs_target) / 2 + (self.lamda / 2) * f.T @ f
 
-    def C_JAX_update(self, f, omega, dJ_dx, J_prev, max_Armijo_iter=5, delta=0.5):
+    def C_JAX_update(self, f, omega, dJ_dx, J_prev, max_Armijo_iter=5, delta=1e-2):
 
         print("Armijo iterations.........")
         for k in range(max_Armijo_iter):
@@ -38,19 +38,28 @@ class Cost_functional:
             qs = self.wf.TimeIntegration(self.qs_0, f_new, self.sigma, self.ti_method)
             if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
                 print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
-                omega = omega / 4
+                omega = omega / 2
             elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
                 print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
                 exit()
             else:
                 J = self.C_JAX_cost(qs, f_new)
-                if J < J_prev - delta * omega * jnp.linalg.norm(f_new):
+                dJ = J_prev - delta * omega * jnp.linalg.norm(f_new) ** 2
+                if J < dJ:
                     J_opt = J
                     f_opt = f_new
                     print(f"Armijo iteration converged after {k + 1} steps")
-                    return f_opt, J_opt
-                elif J >= J_prev or np.isnan(J):
-                    omega = omega / 4
+                    return f_opt, J_opt, jnp.linalg.norm(dJ_dx)
+                elif J >= dJ or jnp.isnan(J):
+                    if k == max_Armijo_iter - 1:
+                        J_opt = J
+                        f_opt = f_new
+                        print(f"Armijo iteration reached maximum limit......")
+                        return f_opt, J_opt, jnp.linalg.norm(dJ_dx)
+                    else:
+                        print(f"No NANs found but step size omega = {omega} too large!",
+                              f"Reducing omega at iter={k + 1}, with J={J}")
+                        omega = omega / 2
 
 
 
@@ -115,3 +124,29 @@ def scipy_root(f, Df=None):
         return root(f, x0, jac=Df, args=args).x
 
     return solver
+
+
+
+def Force_masking(qs, X, Y, t, dim=1):
+    from scipy.signal import savgol_filter
+    from scipy.ndimage import uniform_filter1d
+
+    Nx = len(X)
+    Nt = len(t)
+
+    T = qs[:Nx, :]
+    S = qs[Nx:, :]
+
+    if dim == 1:
+        mask = np.zeros((Nx, Nt))
+        for j in reversed(range(Nt)):
+            if j > Nt // 4:
+                mask[:, j] = 1
+            else:
+                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
+    elif dim == 2:
+        pass
+    else:
+        print('Implement masking first!!!!!!!')
+
+    return mask
