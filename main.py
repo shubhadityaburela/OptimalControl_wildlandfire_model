@@ -26,12 +26,12 @@ wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
 wf.Grid()
 tm = "bdf4"
 f = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
-qs_target = jnp.concatenate((20 * jnp.ones((wf.Nxi * wf.Neta, wf.Nt)),
+qs_target = jnp.concatenate((jnp.zeros((wf.Nxi * wf.Neta, wf.Nt)),
                             jnp.ones((wf.Nxi * wf.Neta, wf.Nt))), axis=0)  # Target value of the variables
 
 impath = "./data/"
 os.makedirs(impath, exist_ok=True)
-calc_sigma = True
+calc_sigma = False
 if calc_sigma:
     f_ = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
     s_ = jnp.zeros_like(qs_target)
@@ -59,17 +59,18 @@ else:
 # Optimal control
 max_opt_steps = 2000
 verbose = True
-lamda = 1  # regularization parameter
-omega = 1e-2  # initial step size for gradient update
-dJ_min = 1e-10
+lamda = 1e-2  # regularization parameter
+omega = 1  # initial step size for gradient update
+dL_du_min = 1e-10
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
 q0_adj = wf.InitialConditions_adjoint()
 J_list = []  # Collecting cost functional over the optimization steps
+dL_du_list = []  # Collecting the gradient over the optimization steps
 
-plt.ion()
-fig, ax = plt.subplots(1, 2)
+
+#%%
 for opt_step in range(max_opt_steps):
     '''
     Forward calculation 
@@ -85,12 +86,13 @@ for opt_step in range(max_opt_steps):
     Objective and costs for control
     '''
     J = Calc_Cost(qs, qs_target, f, lamda)
-    if opt_step > 0:
+    if opt_step == 0:
+        jnp.save(impath + 'qs_org.npy', qs)
+    else:
         dJ = (J - J_list[-1]) / J_list[0]
-        # if verbose: print("Objective J= %1.3e" % J)
-        if abs(dJ) < dJ_min:
-            if verbose : print("dJ turns very small thus quitting...")
-            break  # stop if we are close to the minimum
+        if abs(dJ) == 0:
+            if verbose: print("WARNING: dJ has turned 0...")
+            break
     J_list.append(J)
 
     '''
@@ -101,42 +103,52 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
-
     '''
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dJ_dx_norm = Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J,
-                                          max_Armijo_iter=100, wf=wf, ti_method=tm)
+    f, J_opt, dL_du = Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J,
+                                     max_Armijo_iter=100, wf=wf, ti_method=tm)
+    dL_du_list.append(dL_du)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     if verbose: print(
-        f"J_opt : {J_opt}, ||dJ_dx|| = {dJ_dx_norm}"
+        f"J_opt : {J_opt}, ||dL_du|| = {dL_du}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
     )
+
+    # Convergence criteria
     if opt_step == max_opt_steps - 1:
-        print('warning maximal number of steps reached',
-              "Objective J= %1.3e" % J)
+        if verbose: print("\n\n-------------------------------")
+        if verbose: print(
+            f"WARNING... maximal number of steps reached, "
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
+        )
+        break
+    elif dL_du / dL_du_list[0] < dL_du_min:
+        if verbose: print("\n\n-------------------------------")
+        if verbose: print(
+            f"Optimization converged with, "
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
+        )
+        break
+# Save the optimized solution
+jnp.save(impath + 'qs_opt.npy', qs)
 
-    ax[0].pcolormesh(qs[:wf.Nxi, :].T, cmap='YlOrRd')
-    ax[0].axis('auto')
-    ax[0].set_title("T")
-    ax[0].set_yticks([], [])
-    ax[0].set_xticks([], [])
-    ax[1].pcolormesh(qs[wf.Nxi:, :].T, cmap='YlGn')
-    ax[1].axis('auto')
-    ax[1].set_title("S")
-    ax[1].set_yticks([], [])
-    ax[1].set_xticks([], [])
-
+#%%
+qs_org = jnp.load(impath + 'qs_org.npy')
+qs_opt = jnp.load(impath + 'qs_opt.npy')
+plt.ion()
+fig, ax = plt.subplots(1, 1)
+for n in range(wf.Nt):
+    ax.plot(wf.X, qs_org[wf.Nxi:, n], label="qs_org")
+    ax.plot(wf.X, qs_opt[wf.Nxi:, n], label="qs_opt")
+    ax.set_title("mask")
+    ax.legend()
     plt.draw()
-    plt.pause(0.5)
-    ax[0].cla()
-    ax[1].cla()
+    plt.pause(0.05)
+    ax.cla()
 
-if J > J_list[0]:
-    print("optimization failed, Objective J/J[0] = %1.3f, J= %1.3e" % (J / J_list[0], J))
-
-
+#%%
 # Plot the results
 pf = PlotFlow(wf.X, wf.Y, wf.t)
 if Dimension == "1D":
@@ -150,21 +162,23 @@ else:
 
 
 
-# # Compute the masking array
-# qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(),
-#                                np.zeros((wf.Nxi * wf.Neta, wf.Nt)))
-# sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
-# sigma = np.tile(sigma, (2, 1))
 
 
+    # plt.ion()
+    # fig, ax = plt.subplots(1, 2)
 
-# plt.ion()
-# fig, ax = plt.subplots(1, 1)
-# for n in range(wf.Nt):
-#     ax.plot(wf.X, mask[:, n])
-#     ax.plot(wf.X, (qs_target[:wf.Nxi, n] - np.min(qs_target[:wf.Nxi, n])) / (np.max(qs_target[:wf.Nxi, n]) - np.min(qs_target[:wf.Nxi, n])))
-#     ax.set_title("mask")
-#     plt.draw()
-#     plt.pause(0.02)
-#     ax.cla()
-# exit()
+    # ax[0].pcolormesh(qs[:wf.Nxi, :].T, cmap='YlOrRd')
+    # ax[0].axis('auto')
+    # ax[0].set_title("T")
+    # ax[0].set_yticks([], [])
+    # ax[0].set_xticks([], [])
+    # ax[1].pcolormesh(qs[wf.Nxi:, :].T, cmap='YlGn')
+    # ax[1].axis('auto')
+    # ax[1].set_title("S")
+    # ax[1].set_yticks([], [])
+    # ax[1].set_xticks([], [])
+    #
+    # plt.draw()
+    # plt.pause(0.5)
+    # ax[0].cla()
+    # ax[1].cla()

@@ -10,12 +10,12 @@ def Calc_Grad(lamda, sigma, f, qs_adj):
 
 
 def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Armijo_iter=5,
-                   wf=None, delta=0.5, ti_method="rk4"):
+                   wf=None, delta=1e-2, ti_method="rk4"):
 
     print("Armijo iterations.........")
     for k in range(max_Armijo_iter):
-        dJ_dx = Calc_Grad(lamda, sigma, f, qs_adj)
-        f_new = f - omega * dJ_dx
+        dL_du = Calc_Grad(lamda, sigma, f, qs_adj)
+        f_new = f - omega * dL_du
 
         # Solve the primal equation
         qs = wf.TimeIntegration_primal(q0, f_new, sigma, ti_method=ti_method)
@@ -27,15 +27,21 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
             exit()
         else:
             J = Calc_Cost(qs, qs_target, f_new, lamda)
-            dJ = J_prev - delta * omega * jnp.linalg.norm(f_new) ** 2
+            dJ = J_prev - delta * omega * jnp.linalg.norm(dL_du) ** 2
             if J < dJ:
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, jnp.linalg.norm(dJ_dx)
+                return f_opt, J_opt, jnp.linalg.norm(dL_du)
             elif J >= dJ or jnp.isnan(J):
-                print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
-                omega = omega / 2
+                if k == max_Armijo_iter - 1:
+                    J_opt = J
+                    f_opt = f_new
+                    print(f"Armijo iteration reached maximum limit......")
+                    return f_opt, J_opt, jnp.linalg.norm(dL_du)
+                else:
+                    print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
+                    omega = omega / 2
 
 
 
