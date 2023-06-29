@@ -248,15 +248,15 @@ class Wildfire:
 
             return self.bdf4(f=body, tt=self.t, x0=qt_adj, uu=f0.T, func_args=(qs.T, qs_target.T), type='backward').T
 
-    def ReDim(self, qs, qs_adj):
-        qs = qs.at[:self.NN, :].set(qs.at[:self.NN, :].get() * self.T_ref)
-        qs = qs.at[self.NN:, :].set(qs.at[self.NN:, :].get() * self.S_ref)
-        qs_adj = qs_adj.at[:self.NN, :].set(qs_adj.at[:self.NN, :].get() * self.T_ref)
-        qs_adj = qs_adj.at[self.NN:, :].set(qs_adj.at[self.NN:, :].get() * self.S_ref)
+    def ReDim_grid(self):
         self.X = self.X.at[:].set(self.X.at[:].get() * self.x_ref)
         self.t = self.t.at[:].set(self.t.at[:].get() * self.t_ref)
 
-        return qs, qs_adj
+    def ReDim_qs(self, qs):
+        qs = qs.at[:self.NN, :].set(qs.at[:self.NN, :].get() * self.T_ref)
+        qs = qs.at[self.NN:, :].set(qs.at[self.NN:, :].get() * self.S_ref)
+
+        return qs
 
     @staticmethod
     def rk4(RHS: callable,
@@ -494,52 +494,3 @@ class Wildfire:
             # jax.debug.print('\np = {x}\n', x = p)
 
             return p
-
-
-def Force_masking(qs, X, Y, t, dim=1):
-    from scipy.signal import savgol_filter
-    from scipy.ndimage import uniform_filter1d
-
-    Nx = len(X)
-    Nt = len(t)
-
-    T = qs[:Nx, :]
-    S = qs[Nx:, :]
-
-    if dim == 1:
-        mask = np.zeros((Nx, Nt))
-        for j in reversed(range(Nt)):
-            if j > Nt // 4:
-                mask[:, j] = 1
-            else:
-                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
-    elif dim == 2:
-        pass
-    else:
-        print('Implement masking first!!!!!!!')
-
-    return mask
-
-
-def Adjoint_Matrices():
-    import sympy as sy
-    from sympy.physics.units.quantities import Quantity
-
-    k = Quantity('k')
-    al = Quantity('alpha')
-    g = Quantity('gamma')
-    gs = Quantity('gamma_s')
-    m = Quantity('mu')
-
-    T, S = sy.symbols('T S')
-
-    a = sy.Matrix([k * T, 0])
-    b = sy.Matrix([T, 0])
-    c_0 = sy.Matrix([(al * S * sy.exp(-m / T) - al * g * T), -S * sy.exp(-m / T) * gs])
-    c_1 = sy.Matrix([- al * g * T, 0])
-
-    da_dq = a.jacobian([T, S])
-    db_dq = b.jacobian([T, S])
-    dc_dq = [c_0.jacobian([T, S]), c_1.jacobian([T, S])]
-
-    return da_dq, db_dq, dc_dq
