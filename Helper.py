@@ -1,24 +1,55 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 
-def Calc_Cost(q, q_target, f, lamda):
-    return (jnp.linalg.norm(q - q_target)) ** 2 / 2 + (lamda / 2) * (jnp.linalg.norm(f)) ** 2
+def L2norm(q, **kwargs):
+    q = q.reshape((-1))
+    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
 
 
-def Calc_Grad(lamda, sigma, f, qs_adj):
-    return lamda * f + jnp.multiply(sigma, qs_adj)
+def Calc_Cost(q, q_target, f, lamda, **kwargs):
+    N = kwargs.get('Nx')
+    T_res = q[:N, :] - q_target[:N, :]
+    S_res = q[N:, :] - q_target[N:, :]
+    f_T = f[:N, :]
+    f_S = f[N:, :]
+
+    cost_T = (lamda['T_var'] / 2) * (L2norm(T_res, **kwargs)) ** 2 + \
+             (lamda['T_reg'] / 2) * (L2norm(f_T, **kwargs)) ** 2
+    cost_S = (lamda['S_var'] / 2) * (L2norm(S_res, **kwargs)) ** 2 + \
+             (lamda['S_reg'] / 2) * (L2norm(f_S, **kwargs)) ** 2
+
+    return cost_T + cost_S
 
 
-def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Armijo_iter=5,
-                   wf=None, delta=1e-2, ti_method="rk4"):
+def Calc_Grad(lamda, sigma, f, qs_adj, **kwargs):
+    N = kwargs.get('Nx')
+    T_adj = qs_adj[:N, :]
+    S_adj = qs_adj[N:, :]
+    f_T = f[:N, :]
+    f_S = f[N:, :]
+    sigma_T = lamda['T_sig'] * sigma[:N, :]
+    sigma_S = lamda['S_sig'] * sigma[N:, :]
+
+    dL_du = jnp.zeros_like(f)
+    dL_du = dL_du.at[:N, :].set(lamda['T_reg'] * f_T + jnp.multiply(sigma_T, T_adj))
+    dL_du = dL_du.at[N:, :].set(lamda['S_reg'] * f_S + jnp.multiply(sigma_S, S_adj))
+    return dL_du
+
+
+def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Armijo_iter,
+                   wf, delta, ti_method, **kwargs):
 
     print("Armijo iterations.........")
+    count = 0
+    itr = 5
     for k in range(max_Armijo_iter):
-        dL_du = Calc_Grad(lamda, sigma, f, qs_adj)
+        dL_du = Calc_Grad(lamda, sigma, f, qs_adj, **kwargs)
         f_new = f - omega * dL_du
 
         # Solve the primal equation
         qs = wf.TimeIntegration_primal(q0, f_new, sigma, ti_method=ti_method)
+
         if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
@@ -26,24 +57,62 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost(qs, qs_target, f_new, lamda)
-            dJ = J_prev - delta * omega * jnp.linalg.norm(dL_du) ** 2
+            J = Calc_Cost(qs, qs_target, f_new, lamda, **kwargs)
+            dJ = J_prev - delta * omega * L2norm(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, jnp.linalg.norm(dL_du)
+                return f_opt, J_opt, L2norm(dL_du, **kwargs)
             elif J >= dJ or jnp.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
-                    print(f"Armijo iteration reached maximum limit......")
-                    return f_opt, J_opt, jnp.linalg.norm(dL_du)
+                    print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
+                    return f_opt, J_opt, L2norm(dL_du, **kwargs)
                 else:
-                    print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
-                    omega = omega / 2
+                    if J == dJ:
+                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
+                              f"Reducing omega at iter={k + 1}, with J={J}")
+                        omega = omega / 2
+                        count = count + 1
+                        if count > itr:
+                            J_opt = J
+                            f_opt = f_new
+                            print(f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
+                            return f_opt, J_opt, L2norm(dL_du, **kwargs)
+                    else:
+                        print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
+                        omega = omega / 2
 
 
+def Calc_target_val(qs, *args, kind='exp_decay', **kwargs):
+    N = kwargs.get('Nx')
+    t = args[0]
+    X = args[1]
+    T = qs[:N]
+    S = qs[N:]
+
+    if kind == 'exp_decay':
+        exp_T = jnp.tile(jnp.exp(-0.1 * t), (N, 1))
+        T = jnp.multiply(T, exp_T)
+        S = jnp.multiply(S, (T > 0).astype(int))
+
+        # import matplotlib.pyplot as plt
+        # X_grid, t_grid = np.meshgrid(X, t)
+        # X_grid = X_grid.T
+        # t_grid = t_grid.T
+        # ax = plt.axes(projection='3d')
+        # ax.plot_surface(X_grid, t_grid, T, rstride=1, cstride=1,
+        #                 cmap='viridis', edgecolor='none')
+        # ax.set_title('surface')
+        # plt.show()
+        # exit()
+
+        return jnp.concatenate((T, S), axis=0)  # Target value of the variable
+
+    elif kind == 'zero':
+        return jnp.concatenate((jnp.zeros_like(T), jnp.ones_like(S)), axis=0)  # Target value of the variable
 
 
 from jax import jit, jacobian
@@ -126,7 +195,7 @@ def Force_masking(qs, X, Y, t, dim=1):
             if j > Nt // 4:
                 mask[:, j] = 1
             else:
-                mask[:, j] = uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
+                mask[:, j] = S[:, j + Nt // 4]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
     elif dim == 2:
         pass
     else:

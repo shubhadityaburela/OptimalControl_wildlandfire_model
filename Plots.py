@@ -9,6 +9,7 @@ from matplotlib import cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import moviepy.video.io.ImageSequenceClip
 import glob
+import jax.numpy as jnp
 
 plt.rcParams.update({
     "text.usetex": True,
@@ -80,7 +81,7 @@ class PlotFlow:
         # Plot the snapshot matrix for conserved variables for original model
         fig = plt.figure(figsize=(10, 5))
         ax1 = fig.add_subplot(121)
-        im1 = ax1.pcolormesh(self.X_1D_grid, self.t_grid, T, cmap='YlOrRd')
+        im1 = ax1.pcolormesh(self.X_1D_grid, self.t_grid, T, cmap='YlOrRd')  # , vmin=0, vmax=jnp.max(T))
         ax1.axis('off')
         # ax1.axis('scaled')
         ax1.set_title(r"$T(x, t)$")
