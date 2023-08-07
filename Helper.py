@@ -195,7 +195,7 @@ def Force_masking(qs, X, Y, t, dim=1):
             if j > Nt // 4:
                 mask[:, j] = 1
             else:
-                mask[:, j] = S[:, j + Nt // 4]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
+                mask[:, j] = S[:, j + Nt // 2]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
     elif dim == 2:
         pass
     else:

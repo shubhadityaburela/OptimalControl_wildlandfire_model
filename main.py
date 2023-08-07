@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 250
+Nxi = 500
 Neta = 1
-Nt = 500
+Nt = 1000
 
 # Wildfire solver initialization along with grid initialization
 wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
@@ -47,9 +47,9 @@ sigma = jnp.load(impath + 'sigma.npy')
 # Optimal control
 max_opt_steps = 100
 verbose = True
-lamda = {'T_var': 1, 'S_var': 0, 'T_reg': 1e-2, 'S_reg': 0, 'T_sig': 1, 'S_sig': 0}  # weights and regularization parameter
-omega = 1e-2  # initial step size for gradient update
-dL_du_min = 1e-10  # Convergence criteria
+lamda = {'T_var': 1, 'S_var': 0, 'T_reg': 1e1, 'S_reg': 0, 'T_sig': 1, 'S_sig': 0}  # weights and regularization parameter
+omega = 1e-3  # initial step size for gradient update
+dL_du_min = 1e-6  # Convergence criteria
 f = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = Calc_target_val(qs, wf.t, wf.X, kind='zero', **kwargs)  # Target value for the optimization step
 J_list = []  # Collecting cost functional over the optimization steps
@@ -97,7 +97,7 @@ for opt_step in range(max_opt_steps):
     '''
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du = Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J,
-                                     max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, **kwargs)
+                                     max_Armijo_iter=100, wf=wf, delta=1e-6, ti_method=tm, **kwargs)
     dL_du_list.append(dL_du)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
@@ -121,23 +121,34 @@ for opt_step in range(max_opt_steps):
         )
         break
 
-#%%
 # Final state corresponding to the optimal control f
 qs = wf.TimeIntegration_primal(q0, f, sigma, ti_method=tm)
 
 # Save the optimized solution
 jnp.save(impath + 'qs_opt.npy', qs)
-jnp.save(impath + 'qs_opt_adj', qs_adj)
+jnp.save(impath + 'qs_adj_opt.npy', qs_adj)
 jnp.save(impath + 'f_opt.npy', f)
 
 #%%
-# f_opt = jnp.load(impath + 'f_opt.npy')
-# qs = wf.TimeIntegration_primal(q0, f_opt, sigma, ti_method=tm)
+# Load the results
+qs_org = jnp.load(impath + 'qs_org.npy')
+qs_opt = jnp.load(impath + 'qs_opt.npy')
+qs_adj_opt = jnp.load(impath + 'qs_adj_opt.npy')
+f_opt = jnp.load(impath + 'f_opt.npy')
 
-#%%
-# qs_org = jnp.load(impath + 'qs_org.npy')
-# qs_opt = jnp.load(impath + 'qs_opt.npy')
-# f_opt = jnp.load(impath + 'f_opt.npy')
+
+# Plot the results
+pf = PlotFlow(wf.X, wf.Y, wf.t)
+if Dimension == "1D":
+    pf.plot1D(qs_org, name="qs_org", immpath="./plots/FOM_1D/")
+    pf.plot1D(qs_opt, name="qs_opt", immpath="./plots/FOM_1D/")
+    pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/FOM_1D/")
+    pf.plot1D(f_opt, name="f_opt", immpath="./plots/FOM_1D/")
+else:
+    pf.plot2D(qs)
+
+
+
 # plt.ion()
 # fig, ax = plt.subplots(1, 1)
 # for n in range(wf.Nt):
@@ -149,12 +160,3 @@ jnp.save(impath + 'f_opt.npy', f)
 #     plt.pause(5)
 #     ax.cla()
 
-#%%
-# Plot the results
-pf = PlotFlow(wf.X, wf.Y, wf.t)
-if Dimension == "1D":
-    # Plot the Full Order Model (FOM)
-    pf.plot1D(qs)
-else:
-    # Plot the Full Order Model (FOM)
-    pf.plot2D(qs)

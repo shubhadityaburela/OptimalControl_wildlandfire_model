@@ -35,8 +35,8 @@ class Wildfire:
         self.NumConservedVar = 2
 
         # Private variables
-        self.Lxi = 250
-        self.Leta = 250
+        self.Lxi = 500
+        self.Leta = 500
         self.Nxi = Nxi
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
