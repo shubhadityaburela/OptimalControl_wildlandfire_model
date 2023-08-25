@@ -1,6 +1,6 @@
 from Wildfire import Wildfire
 from Plots import PlotFlow
-from Helper import Calc_Cost, Update_Control, Force_masking
+from Helper import Calc_Cost, Update_Control, Force_masking, Calc_target_val
 import numpy as np
 import sys
 import os
@@ -8,9 +8,6 @@ from time import perf_counter
 import jax
 from jax.config import config
 import jax.numpy as jnp
-
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-
 config.update("jax_debug_nans", True)
 jax.config.update("jax_enable_x64", True)
 
@@ -20,63 +17,53 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 250
+Nxi = 500
 Neta = 1
-Nt = 200
+Nt = 500
 
 # Wildfire solver initialization along with grid initialization
 wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
 wf.Grid()
-tm = "bdf4"
-f = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
-qs_target = jnp.concatenate((jnp.zeros((wf.Nxi * wf.Neta, wf.Nt)),
-                            jnp.ones((wf.Nxi * wf.Neta, wf.Nt))), axis=0)  # Target value of the variables
+tm = "rk4"  # Time stepping method
+kwargs = {
+    'dx': wf.dx,
+    'dt': wf.dt,
+    'Nx': wf.Nxi,
+    'Nt': wf.Nt,
+    'Nc': wf.NumConservedVar
+}
 
+# Solve for sigma and the target values
 impath = "./data/"
 os.makedirs(impath, exist_ok=True)
-calc_sigma = False
-if calc_sigma:
-    f_ = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
-    s_ = jnp.zeros_like(qs_target)
-    qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_, s_, ti_method="rk4")
-    sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
-    sigma = jnp.tile(sigma, (2, 1))
-    jnp.save(impath + 'sigma.npy', sigma)
-    sigma = jnp.load(impath + 'sigma.npy')
-
-    # plt.ion()
-    # fig, ax = plt.subplots(1, 1)
-    # for n in range(wf.Nt):
-    #     ax.plot(wf.X, sigma[wf.Nxi:, n], label="sigma")
-    #     ax.plot(wf.X, qs[wf.Nxi:, n], label="S")
-    #     ax.set_title("mask")
-    #     ax.legend()
-    #     plt.draw()
-    #     plt.pause(1)
-    #     ax.cla()
-
-    # exit()
-else:
-    sigma = jnp.load(impath + 'sigma.npy')
+f_ = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
+s_ = jnp.zeros_like(f_)
+qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_, s_, ti_method="rk4")
+sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
+sigma = jnp.tile(sigma, (2, 1))
+jnp.save(impath + 'sigma.npy', sigma)
+sigma = jnp.load(impath + 'sigma.npy')
 
 # Optimal control
-max_opt_steps = 2000
+max_opt_steps = 100
 verbose = True
-lamda = 1e-2  # regularization parameter
+lamda = {'T_var': 1, 'S_var': 0, 'T_reg': 1e1, 'S_reg': 0, 'T_sig': 1, 'S_sig': 0}  # weights and regularization parameter
 omega = 1  # initial step size for gradient update
-dL_du_min = 1e-10
+dL_du_min = 1e-6  # Convergence criteria
+f = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
+qs_target = Calc_target_val(qs, wf.t, wf.X, kind='zero', **kwargs)  # Target value for the optimization step
+J_list = []  # Collecting cost functional over the optimization steps
+dL_du_list = []  # Collecting the gradient over the optimization steps
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
 q0_adj = wf.InitialConditions_adjoint()
-J_list = []  # Collecting cost functional over the optimization steps
-dL_du_list = []  # Collecting the gradient over the optimization steps
 
 
 #%%
 for opt_step in range(max_opt_steps):
     '''
-    Forward calculation 
+    Forward calculation
     '''
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
@@ -88,7 +75,7 @@ for opt_step in range(max_opt_steps):
     '''
     Objective and costs for control
     '''
-    J = Calc_Cost(qs, qs_target, f, lamda)
+    J = Calc_Cost(qs, qs_target, f, lamda, **kwargs)
     if opt_step == 0:
         jnp.save(impath + 'qs_org.npy', qs)
     else:
@@ -102,7 +89,7 @@ for opt_step in range(max_opt_steps):
     Adjoint calculation
     '''
     time_odeint = perf_counter()  # save timing
-    qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, ti_method=tm)
+    qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, ti_method=tm, dict_args=lamda)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
@@ -111,7 +98,7 @@ for opt_step in range(max_opt_steps):
     '''
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du = Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J,
-                                     max_Armijo_iter=100, wf=wf, ti_method=tm)
+                                     max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, **kwargs)
     dL_du_list.append(dL_du)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
@@ -135,37 +122,34 @@ for opt_step in range(max_opt_steps):
         )
         break
 
-# Re-dimensionalize the grid
-wf.ReDim_grid()
+# Final state corresponding to the optimal control f
+qs = wf.TimeIntegration_primal(q0, f, sigma, ti_method=tm)
 
+#%%
 # Save the optimized solution
 jnp.save(impath + 'qs_opt.npy', qs)
+jnp.save(impath + 'qs_adj_opt.npy', qs_adj)
+jnp.save(impath + 'f_opt.npy', f)
 
 
 #%%
+# Load the results
 qs_org = jnp.load(impath + 'qs_org.npy')
 qs_opt = jnp.load(impath + 'qs_opt.npy')
+qs_adj_opt = jnp.load(impath + 'qs_adj_opt.npy')
+f_opt = jnp.load(impath + 'f_opt.npy')
 
+# Re-dimensionalize the grid and the solution
+wf.ReDim_grid()
 qs_org = wf.ReDim_qs(qs_org)
 qs_opt = wf.ReDim_qs(qs_opt)
 
-plt.ion()
-fig, ax = plt.subplots(1, 1)
-for n in range(wf.Nt):
-    ax.plot(wf.X, qs_org[wf.Nxi:, n], label="qs_org")
-    ax.plot(wf.X, qs_opt[wf.Nxi:, n], label="qs_opt")
-    ax.set_title("mask")
-    ax.legend()
-    plt.draw()
-    plt.pause(0.05)
-    ax.cla()
-
-#%%
 # Plot the results
 pf = PlotFlow(wf.X, wf.Y, wf.t)
 if Dimension == "1D":
-    # Plot the Full Order Model (FOM)
-    pf.plot1D(qs)
+    pf.plot1D(qs_org, name="qs_org", immpath="./plots/FOM_1D/")
+    pf.plot1D(qs_opt, name="qs_opt", immpath="./plots/FOM_1D/")
+    pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/FOM_1D/")
+    pf.plot1D(f_opt, name="f_opt", immpath="./plots/FOM_1D/")
 else:
-    # Plot the Full Order Model (FOM)
     pf.plot2D(qs)

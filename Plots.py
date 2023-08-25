@@ -71,17 +71,16 @@ class PlotFlow:
         self.X_2D_grid = np.transpose(self.X_2D_grid)
         self.Y_2D_grid = np.transpose(self.Y_2D_grid)
 
-    def plot1D(self, Q):
-        immpath = "./plots/FOM_1D/primal/"
+    def plot1D(self, Q, name, immpath):
         os.makedirs(immpath, exist_ok=True)
 
-        T = Q[:self.Nx, :]  # (Q[:self.Nx, :] - jnp.min(Q[:self.Nx, :])) / (jnp.max(Q[:self.Nx, :]) - jnp.min(Q[:self.Nx, :]))
+        T = Q[:self.Nx, :]
         S = Q[self.Nx:, :]
 
         # Plot the snapshot matrix for conserved variables for original model
         fig = plt.figure(figsize=(10, 5))
         ax1 = fig.add_subplot(121)
-        im1 = ax1.pcolormesh(self.X_1D_grid, self.t_grid, T, cmap='YlOrRd')
+        im1 = ax1.pcolormesh(self.X_1D_grid, self.t_grid, T, cmap='YlOrRd')  # , vmin=0, vmax=jnp.max(T))
         ax1.axis('off')
         # ax1.axis('scaled')
         ax1.set_title(r"$T(x, t)$")
@@ -101,7 +100,7 @@ class PlotFlow:
         fig.supylabel(r"time $t$")
         fig.supxlabel(r"space $x$")
 
-        save_fig(filepath=immpath + 'Var', figure=fig)
+        fig.savefig(immpath + name, dpi=300, transparent=True)
 
     def plot2D(self, Q, save_plot=False, plot_every=10, plot_at_all=False):
         Q = np.reshape(np.transpose(Q), newshape=[self.Nt, 2, self.Nx, self.Ny], order="F")
