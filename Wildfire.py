@@ -1,11 +1,16 @@
 import jax.lax
 import jax.numpy as jnp
 from jax.config import config
+from scipy.sparse import identity, block_diag, csr_array, eye, kron
+from itertools import accumulate
+from sklearn.utils.extmath import randomized_svd
+from scipy.linalg import qr
 
 config.update("jax_debug_nans", True)
 jax.config.update("jax_enable_x64", True)
 
 from Coefficient_Matrix import CoefficientMatrix
+from Helper import NL, NL_Jac
 import matplotlib
 
 matplotlib.use("TkAgg")
@@ -49,25 +54,28 @@ class Wildfire:
         self.__firstderivativeOrder = "5thOrder"
 
         # Dimensional constants used in the model
-        self.__k = 0.2136
-        self.__gamma_s = 0.1625
-        self.__v_x = jnp.zeros(self.Nt)
-        self.__v_y = jnp.zeros(self.Nt)
-        self.__alpha = 187.93
-        self.__gamma = 4.8372e-5
-        self.__mu = 558.49
-        self.__T_a = 300
-        self.__speedofsoundsquare = 1
+        self.k = 0.2136
+        self.gamma_s = 0.1625
+        self.v_x = jnp.zeros(self.Nt)
+        self.v_y = jnp.zeros(self.Nt)
+        self.alpha = 187.93
+        self.gamma = 4.8372e-5
+        self.mu = 558.49
+        self.T_a = 300
+        self.speedofsoundsquare = 1
+
+        self.c_r1 = 1.0
+        self.c_r3 = - (self.mu * self.gamma_s / self.alpha)
 
         # Sparse matrices of the first and second order
         self.Mat_primal = None
         self.Mat_adjoint = None
 
         # Reference variables
-        self.T_ref = self.__mu
+        self.T_ref = self.mu
         self.S_ref = 1
-        self.x_ref = jnp.sqrt(self.__k * self.__mu) / jnp.sqrt(self.__alpha)
-        self.t_ref = self.__mu / self.__alpha
+        self.x_ref = jnp.sqrt(self.k * self.mu) / jnp.sqrt(self.alpha)
+        self.t_ref = self.mu / self.alpha
 
     def Grid(self):
         self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi / self.x_ref
@@ -80,7 +88,7 @@ class Wildfire:
             self.Y = jnp.arange(1, self.Neta + 1) * self.Leta / self.Neta
             self.dy = self.Y[1] - self.Y[0]
 
-        dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / jnp.sqrt(self.__speedofsoundsquare)
+        dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / jnp.sqrt(self.speedofsoundsquare)
         t = dt * jnp.arange(self.Nt)
 
         self.t = t / self.t_ref
@@ -124,12 +132,12 @@ class Wildfire:
         # Coefficients for the terms in the equation
         Coeff_diff = 1.0
 
-        Coeff_conv_x = self.__v_x.at[0].get()
-        Coeff_conv_y = self.__v_y.at[0].get()
+        Coeff_conv_x = self.v_x.at[0].get()
+        Coeff_conv_y = self.v_y.at[0].get()
 
         Coeff_react_1 = 1.0
-        Coeff_react_2 = self.__gamma * self.__mu
-        Coeff_react_3 = (self.__mu * self.__gamma_s / self.__alpha)
+        Coeff_react_2 = self.gamma * self.mu
+        Coeff_react_3 = (self.mu * self.gamma_s / self.alpha)
 
         DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
         Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_react_2 * T + \
@@ -169,6 +177,81 @@ class Wildfire:
             return self.bdf4(f=body, tt=self.t, x0=q0, uu=f0.T,
                              func_args=(sigma.T,)).T
 
+    def InitialConditions_primal_ROM(self, V, q0):
+
+        return V.transpose() @ q0
+
+    def RHS_primal_ROM(self, a, MAT, V, f, n_rom, red_nl):
+        if red_nl:
+            T_red = MAT[2].at[:, :n_rom[0]].get() @ a.at[:n_rom[0]].get()
+            S_red = MAT[2].at[:, n_rom[0]:].get() @ a.at[n_rom[0]:].get()
+
+            return MAT[0] @ a + V.transpose() @ f   # + MAT[1] @ NL(T_red, S_red)
+        else:
+            var = V @ a
+            T = var[:self.Nxi]
+            S = var[self.Nxi:]
+
+            NL_term = NL(T, S)
+            F = jnp.kron(jnp.asarray([self.c_r1, self.c_r3]), NL_term)
+
+            return MAT[0] @ a + V.transpose() @ f   # + V.transpose() @ F
+
+    def TimeIntegration_primal_ROM(self, a, V, MAT, f0, ti_method="bdf4", red_nl=True, **kwargs):
+
+        n_rom = [kwargs.get('n_rom_T'), kwargs.get('n_rom_S')]
+
+        # Time integration loop
+        if ti_method == "bdf4":
+            pass
+        elif ti_method == "rk4":
+            as_ = jnp.zeros((a.shape[0], self.Nt))
+            as_ = as_.at[:, 0].set(a)
+
+            @jax.jit
+            def body(n, as__):
+                # Main Runge-Kutta 4 solver step
+                h = self.rk4(self.RHS_primal_ROM, as__[:, n - 1], self.dt, MAT, V, f0[:, n], n_rom, red_nl)
+                return as__.at[:, n].set(h)
+
+            return jax.lax.fori_loop(1, self.Nt, body, as_)
+
+    def DEIM_Mat_primal(self, V, qs, **kwargs):
+        n_deim = kwargs.get('n_deim')
+        n_rom = [kwargs.get('n_rom_T'), kwargs.get('n_rom_S')]
+
+        # ---------------------------------------------------
+        # Construct linear operators
+        A00 = self.Mat_primal.Laplace - jnp.eye(self.Nxi) * self.gamma * self.mu
+        A = jax.scipy.linalg.block_diag(A00, jnp.zeros((self.Nxi, self.Nxi)))
+        A_L = (V.transpose() @ A) @ V
+
+        # ---------------------------------------------------
+        # Construct nonlinear operators
+        # Extract the U matrix from the nonlinear snapshots
+        T = qs[:self.Nxi]
+        S = qs[self.Nxi:]
+
+        NL_term = NL(T, S)
+        U, S, VT = randomized_svd(NL_term, n_components=n_deim)
+        U_kron = jnp.kron(jnp.asarray([[self.c_r1], [self.c_r3]]), U)
+
+        # Extract the selection operator
+        [_, _, pivot] = qr(U.T, pivoting=True)
+        SDEIM = jnp.sort(pivot[:n_deim])
+        ST_U_inv = jnp.linalg.inv(U[SDEIM])
+
+        # Compute the leading matrix chain of DEIM approximation
+        A_NL = ((V.transpose() @ U_kron) @ ST_U_inv)
+
+        # Compute the row selection matrix applied to the V matrix
+        # for the hyperreduction of the values inside the nonlinearity
+        ST_V = jnp.zeros((n_deim, sum(n_rom)))
+        ST_V = ST_V.at[:, :n_rom[0]].set(V.at[SDEIM, :n_rom[0]].get())
+        ST_V = ST_V.at[:, n_rom[0]:].set(V.at[self.Nxi + SDEIM, n_rom[0]:].get())
+
+        return [A_L, A_NL, ST_V]
+
     def InitialConditions_adjoint(self):
         T_adj = jnp.zeros_like(self.X) / self.T_ref
         S_adj = jnp.zeros_like(T_adj) / self.S_ref
@@ -198,10 +281,10 @@ class Wildfire:
         epsilon = 1e-8
 
         # Control parameters
-        cp_1 = self.__gamma * self.__mu
-        cp_2 = self.__mu * self.__gamma_s / self.__alpha
+        cp_1 = self.gamma * self.mu
+        cp_2 = self.mu * self.gamma_s / self.alpha
 
-        DT = self.__v_x.at[0].get() * self.Mat_adjoint.Grad_Xi_kron + self.__v_y.at[
+        DT = self.v_x.at[0].get() * self.Mat_adjoint.Grad_Xi_kron + self.v_y.at[
             0].get() * self.Mat_adjoint.Grad_Eta_kron
         T_adj_dot = - self.Mat_adjoint.Laplace.dot(T_adj) - DT.dot(T_adj) - arrhenius_activate * \
                     (S * jnp.exp(-1 / (jnp.maximum(T, epsilon))) * (1 / (jnp.maximum(T, epsilon)) ** 2) *
@@ -243,6 +326,60 @@ class Wildfire:
             return self.bdf4(f=body, tt=self.t, x0=qt_adj, uu=f0.T,
                              func_args=(qs.T, qs_target.T,),
                              type='backward').T
+
+    def InitialConditions_adjoint_ROM(self, V, q0_adj):
+
+        return V.transpose() @ q0_adj
+
+    def RHS_adjoint_ROM(self, a_adj, a, a_target, MAT, V, red_nl, n_rom, T_var, S_var):
+        if red_nl:
+            pass
+        else:
+            var = V @ a
+            T = var[:self.Nxi]
+            S = var[self.Nxi:]
+            F_Jac = NL_Jac(T, S)
+
+            mask_last = jnp.concatenate((jnp.tile(jnp.array([T_var]), n_rom[0]),
+                                         jnp.tile(jnp.array([S_var]), n_rom[1])))
+
+            return - (MAT[0] @ a_adj + mask_last * (a - a_target))   # + (V.transpose() @ F_Jac) @ V
+
+    def TimeIntegration_adjoint_ROM(self, a_adj, as_, as_target, V, MAT, ti_method="bdf4",
+                                    red_nl=True, dict_args=None, **kwargs):
+
+        n_rom = [kwargs.get('n_rom_T'), kwargs.get('n_rom_S')]
+
+        # Time integration loop
+        if ti_method == "bdf4":
+            pass
+        elif ti_method == "rk4":
+            # Time loop
+            as_adj = jnp.zeros((a_adj.shape[0], self.Nt))
+            as_adj = as_adj.at[:, -1].set(a_adj)
+
+            @jax.jit
+            def body(n, as_adj_):
+                # Main Runge-Kutta 4 solver step
+                h = self.rk4(self.RHS_adjoint_ROM, as_adj_[:, -n], -self.dt,
+                             as_[:, -(n + 1)], as_target[:, -(n + 1)], MAT, V, red_nl, n_rom,
+                             dict_args['T_var'], dict_args['S_var'])
+                return as_adj_.at[:, -(n + 1)].set(h)
+
+            return jax.lax.fori_loop(1, self.Nt, body, as_adj)
+
+    def DEIM_Mat_adjoint(self, MAT_p, V, **kwargs):
+        n_deim = kwargs.get('n_deim')
+        n_rom = [kwargs.get('n_rom_T'), kwargs.get('n_rom_S')]
+
+        # ---------------------------------------------------
+        # Construct linear operators
+        A_L = MAT_p[0].transpose()
+
+        # ---------------------------------------------------
+        # Construct nonlinear operators
+
+        return [A_L]
 
     def ReDim_grid(self):
         self.X = self.X.at[:].set(self.X.at[:].get() * self.x_ref)

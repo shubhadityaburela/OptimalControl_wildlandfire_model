@@ -1,28 +1,32 @@
 import numpy as np
+from sklearn.utils.extmath import randomized_svd
 
 
 def L2norm(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
+    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dt'))
 
 
-def Calc_Cost(q, q_target, f, lamda, **kwargs):
+def Calc_Cost(as_, as_target, f, lamda, **kwargs):
+    n_rom_T = kwargs.get('n_rom_T')
     N = kwargs.get('Nx')
-    T_res = q[:N, :] - q_target[:N, :]
-    S_res = q[N:, :] - q_target[N:, :]
+    aT_res = as_[:n_rom_T, :] - as_target[:n_rom_T, :]
+    aS_res = as_[n_rom_T:, :] - as_target[n_rom_T:, :]
     f_T = f[:N, :]
     f_S = f[N:, :]
 
-    cost_T = (lamda['T_var'] / 2) * (L2norm(T_res, **kwargs)) ** 2 + \
+    cost_T = (lamda['T_var'] / 2) * (L2norm(aT_res, **kwargs)) ** 2 + \
              (lamda['T_reg'] / 2) * (L2norm(f_T, **kwargs)) ** 2
-    cost_S = (lamda['S_var'] / 2) * (L2norm(S_res, **kwargs)) ** 2 + \
+    cost_S = (lamda['S_var'] / 2) * (L2norm(aS_res, **kwargs)) ** 2 + \
              (lamda['S_reg'] / 2) * (L2norm(f_S, **kwargs)) ** 2
 
     return cost_T + cost_S
 
 
-def Calc_Grad(lamda, sigma, f, qs_adj, **kwargs):
+def Calc_Grad(lamda, sigma, f, V, as_adj, **kwargs):
     N = kwargs.get('Nx')
+    qs_adj = V @ as_adj
+
     T_adj = qs_adj[:N, :]
     S_adj = qs_adj[N:, :]
     f_T = f[:N, :]
@@ -36,27 +40,26 @@ def Calc_Grad(lamda, sigma, f, qs_adj, **kwargs):
     return dL_du
 
 
-def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Armijo_iter,
-                   wf, delta, ti_method, **kwargs):
-
+def Update_Control(f, omega, lamda, sigma, a0_primal, V, as_adj, as_target, MAT_p, J_prev, max_Armijo_iter,
+                   wf, delta, ti_method, red_nl, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
     for k in range(max_Armijo_iter):
-        dL_du = Calc_Grad(lamda, sigma, f, qs_adj, **kwargs)
+        dL_du = Calc_Grad(lamda, sigma, f, V, as_adj, **kwargs)
         f_new = f - omega * dL_du
 
         # Solve the primal equation
-        qs = wf.TimeIntegration_primal(q0, f_new, sigma, ti_method=ti_method)
+        as_ = wf.TimeIntegration_primal_ROM(a0_primal, V, MAT_p, f, ti_method, red_nl, **kwargs)
 
-        if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
+        if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
+        elif jnp.isnan(as_).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost(qs, qs_target, f_new, lamda, **kwargs)
+            J = Calc_Cost(as_, as_target, f, lamda, **kwargs)
             dJ = J_prev - delta * omega * L2norm(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J
@@ -78,11 +81,22 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
                         if count > itr:
                             J_opt = J
                             f_opt = f_new
-                            print(f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
+                            print(
+                                f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
                             return f_opt, J_opt, L2norm(dL_du, **kwargs)
                     else:
-                        print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
+                        print(f"No NANs found but step size omega = {omega} too large!",
+                              f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
+
+            # Reproject the time amplitudes into current basis
+            qs = V @ as_
+
+            # Update the basis
+            V = compute_red_basis(qs, **kwargs)
+
+            # Offline system matrix assembly
+            MAT_p = wf.DEIM_Mat_primal(V, qs, **kwargs)
 
 
 def Calc_target_val(qs, *args, kind='exp_decay', **kwargs):
@@ -123,7 +137,6 @@ import jax
 
 # BDF4 helper functions
 def newton(f, Df=None, maxIter=10, tol=1e-14):
-
     if Df is None:
         Df = jacobian(f, argnums=0)
 
@@ -154,7 +167,6 @@ def newton(f, Df=None, maxIter=10, tol=1e-14):
 
 
 def jax_minimize(f):
-
     @jit
     def solver(x0, *args):
         g = lambda x: jnp.linalg.norm(
@@ -167,7 +179,6 @@ def jax_minimize(f):
 
 
 def scipy_root(f, Df=None):
-
     if Df is None:
         Df = jit(jacobian(f, argnums=0))
 
@@ -176,7 +187,6 @@ def scipy_root(f, Df=None):
         return root(f, x0, jac=Df, args=args).x
 
     return solver
-
 
 
 def Force_masking(qs, X, Y, t, dim=1):
@@ -202,6 +212,31 @@ def Force_masking(qs, X, Y, t, dim=1):
         print('Implement masking first!!!!!!!')
 
     return mask
+
+
+def NL(T, S):
+    arr_act = jnp.where(T > 0, 1, 0)
+    epsilon = 1e-8
+
+    return arr_act * S * jnp.exp(-1 / (jnp.maximum(T, epsilon)))
+
+
+def NL_Jac(T, S):
+    pass
+
+
+
+
+
+def compute_red_basis(qs, **kwargs):
+    U_T, S_T, VT_T = randomized_svd(qs[:kwargs.get('Nx')], n_components=kwargs.get('n_rom_T'), random_state=None)
+    U_S, S_S, VT_S = randomized_svd(qs[kwargs.get('Nx'):], n_components=kwargs.get('n_rom_S'), random_state=None)
+    V = jnp.block([
+        [U_T, np.zeros_like(U_S)],
+        [np.zeros_like(U_T), U_S]
+    ])
+
+    return V
 
 
 def Adjoint_Matrices():
