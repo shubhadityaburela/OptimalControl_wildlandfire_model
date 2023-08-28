@@ -16,9 +16,9 @@ np.set_printoptions(threshold=sys.maxsize, linewidth=300)
 import matplotlib.pyplot as plt
 
 # Problem variables
-Dimension = "1D"
+Dimension = "2D"
 Nxi = 500
-Neta = 1
+Neta = 500
 Nt = 500
 
 # Wildfire solver initialization along with grid initialization
@@ -27,8 +27,10 @@ wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
     'dx': wf.dx,
+    'dy': wf.dy,
     'dt': wf.dt,
     'Nx': wf.Nxi,
+    'Ny': wf.Neta,
     'Nt': wf.Nt,
     'Nc': wf.NumConservedVar
 }
@@ -36,13 +38,14 @@ kwargs = {
 # Solve for sigma and the target values
 impath = "./data/"
 os.makedirs(impath, exist_ok=True)
-f_ = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
-s_ = jnp.zeros_like(f_)
+f_ = np.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
+s_ = np.zeros_like(f_)
 qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_, s_, ti_method="rk4")
-sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=1)
-sigma = jnp.tile(sigma, (2, 1))
-jnp.save(impath + 'sigma.npy', sigma)
-sigma = jnp.load(impath + 'sigma.npy')
+sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=Dimension)
+sigma = np.tile(sigma, (2, 1))
+np.save(impath + 'sigma.npy', sigma)
+np.save(impath + 'qs_org.npy', qs)
+sigma = np.load(impath + 'sigma.npy')
 
 # Optimal control
 max_opt_steps = 100
@@ -50,8 +53,8 @@ verbose = True
 lamda = {'T_var': 1, 'S_var': 0, 'T_reg': 1e1, 'S_reg': 0, 'T_sig': 1, 'S_sig': 0}  # weights and regularization parameter
 omega = 1  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
-f = jnp.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
-qs_target = Calc_target_val(qs, wf.t, wf.X, kind='zero', **kwargs)  # Target value for the optimization step
+f = np.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
+qs_target = Calc_target_val(qs, wf, kind='zero', **kwargs)  # Target value for the optimization step
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
 
@@ -77,7 +80,7 @@ for opt_step in range(max_opt_steps):
     '''
     J = Calc_Cost(qs, qs_target, f, lamda, **kwargs)
     if opt_step == 0:
-        jnp.save(impath + 'qs_org.npy', qs)
+        pass
     else:
         dJ = (J - J_list[-1]) / J_list[0]
         if abs(dJ) == 0:
@@ -127,17 +130,17 @@ qs = wf.TimeIntegration_primal(q0, f, sigma, ti_method=tm)
 
 #%%
 # Save the optimized solution
-jnp.save(impath + 'qs_opt.npy', qs)
-jnp.save(impath + 'qs_adj_opt.npy', qs_adj)
-jnp.save(impath + 'f_opt.npy', f)
+np.save(impath + 'qs_opt.npy', qs)
+np.save(impath + 'qs_adj_opt.npy', qs_adj)
+np.save(impath + 'f_opt.npy', f)
 
 
 #%%
 # Load the results
-qs_org = jnp.load(impath + 'qs_org.npy')
-qs_opt = jnp.load(impath + 'qs_opt.npy')
-qs_adj_opt = jnp.load(impath + 'qs_adj_opt.npy')
-f_opt = jnp.load(impath + 'f_opt.npy')
+qs_org = np.load(impath + 'qs_org.npy')
+qs_opt = np.load(impath + 'qs_opt.npy')
+qs_adj_opt = np.load(impath + 'qs_adj_opt.npy')
+f_opt = np.load(impath + 'f_opt.npy')
 
 # Re-dimensionalize the grid and the solution
 wf.ReDim_grid()
@@ -152,4 +155,7 @@ if Dimension == "1D":
     pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/FOM_1D/")
 else:
-    pf.plot2D(qs)
+    pf.plot2D(qs_org, name="qs_org", immpath="./plots/FOM_2D/",
+              save_plot=True, plot_every=10, plot_at_all=True)
+    pf.plot2D(qs_opt, name="qs_opt", immpath="./plots/FOM_2D/",
+              save_plot=True, plot_every=10, plot_at_all=True)

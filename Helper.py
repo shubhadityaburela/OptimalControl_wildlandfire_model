@@ -3,15 +3,15 @@ import numpy as np
 
 def L2norm(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
+    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
 
 
 def Calc_Cost(q, q_target, f, lamda, **kwargs):
-    N = kwargs.get('Nx')
-    T_res = q[:N, :] - q_target[:N, :]
-    S_res = q[N:, :] - q_target[N:, :]
-    f_T = f[:N, :]
-    f_S = f[N:, :]
+    NN = kwargs.get('Nx') * kwargs.get('Ny')
+    T_res = q[:NN, :] - q_target[:NN, :]
+    S_res = q[NN:, :] - q_target[NN:, :]
+    f_T = f[:NN, :]
+    f_S = f[NN:, :]
 
     cost_T = (lamda['T_var'] / 2) * (L2norm(T_res, **kwargs)) ** 2 + \
              (lamda['T_reg'] / 2) * (L2norm(f_T, **kwargs)) ** 2
@@ -22,17 +22,18 @@ def Calc_Cost(q, q_target, f, lamda, **kwargs):
 
 
 def Calc_Grad(lamda, sigma, f, qs_adj, **kwargs):
-    N = kwargs.get('Nx')
-    T_adj = qs_adj[:N, :]
-    S_adj = qs_adj[N:, :]
-    f_T = f[:N, :]
-    f_S = f[N:, :]
-    sigma_T = lamda['T_sig'] * sigma[:N, :]
-    sigma_S = lamda['S_sig'] * sigma[N:, :]
+    NN = kwargs.get('Nx') * kwargs.get('Ny')
+    T_adj = qs_adj[:NN, :]
+    S_adj = qs_adj[NN:, :]
+    f_T = f[:NN, :]
+    f_S = f[NN:, :]
+    sigma_T = lamda['T_sig'] * sigma[:NN, :]
+    sigma_S = lamda['S_sig'] * sigma[NN:, :]
 
-    dL_du = jnp.zeros_like(f)
-    dL_du = dL_du.at[:N, :].set(lamda['T_reg'] * f_T + jnp.multiply(sigma_T, T_adj))
-    dL_du = dL_du.at[N:, :].set(lamda['S_reg'] * f_S + jnp.multiply(sigma_S, S_adj))
+    dL_du = np.zeros_like(f)
+    dL_du[:NN, :] = lamda['T_reg'] * f_T + np.multiply(sigma_T, T_adj)
+    dL_du[NN:, :] = lamda['S_reg'] * f_S + np.multiply(sigma_S, S_adj)
+
     return dL_du
 
 
@@ -49,10 +50,10 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
         # Solve the primal equation
         qs = wf.TimeIntegration_primal(q0, f_new, sigma, ti_method=ti_method)
 
-        if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
+        if np.isnan(qs).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
+        elif np.isnan(qs).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
@@ -63,7 +64,7 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
                 return f_opt, J_opt, L2norm(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
+            elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
@@ -83,35 +84,6 @@ def Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J_prev, max_Ar
                     else:
                         print(f"No NANs found but step size omega = {omega} too large!", f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
-
-
-def Calc_target_val(qs, *args, kind='exp_decay', **kwargs):
-    N = kwargs.get('Nx')
-    t = args[0]
-    X = args[1]
-    T = qs[:N]
-    S = qs[N:]
-
-    if kind == 'exp_decay':
-        exp_T = jnp.tile(jnp.exp(-0.1 * t), (N, 1))
-        T = jnp.multiply(T, exp_T)
-        S = jnp.multiply(S, (T > 0).astype(int))
-
-        # import matplotlib.pyplot as plt
-        # X_grid, t_grid = np.meshgrid(X, t)
-        # X_grid = X_grid.T
-        # t_grid = t_grid.T
-        # ax = plt.axes(projection='3d')
-        # ax.plot_surface(X_grid, t_grid, T, rstride=1, cstride=1,
-        #                 cmap='viridis', edgecolor='none')
-        # ax.set_title('surface')
-        # plt.show()
-        # exit()
-
-        return jnp.concatenate((T, S), axis=0)  # Target value of the variable
-
-    elif kind == 'zero':
-        return jnp.concatenate((jnp.zeros_like(T), jnp.ones_like(S)), axis=0)  # Target value of the variable
 
 
 from jax import jit, jacobian
@@ -178,26 +150,58 @@ def scipy_root(f, Df=None):
     return solver
 
 
+def Calc_target_val(qs, wf, kind='exp_decay', **kwargs):
+    NN = kwargs.get('Nx') * kwargs.get('Ny')
+    T = qs[:NN]
+    S = qs[NN:]
 
-def Force_masking(qs, X, Y, t, dim=1):
+    if kind == 'exp_decay':
+        exp_T = np.tile(np.exp(-0.1 * wf.t), (NN, 1))
+        T = np.multiply(T, exp_T)
+        S = np.multiply(S, (T > 0).astype(int))
+
+        # import matplotlib.pyplot as plt
+        # X_grid, t_grid = np.meshgrid(X, t)
+        # X_grid = X_grid.T
+        # t_grid = t_grid.T
+        # ax = plt.axes(projection='3d')
+        # ax.plot_surface(X_grid, t_grid, T, rstride=1, cstride=1,
+        #                 cmap='viridis', edgecolor='none')
+        # ax.set_title('surface')
+        # plt.show()
+        # exit()
+
+        return np.concatenate((T, S), axis=0)  # Target value of the variable
+
+    elif kind == 'zero':
+        return np.concatenate((np.zeros_like(T), np.ones_like(S)), axis=0)  # Target value of the variable
+
+
+def Force_masking(qs, X, Y, t, dim):
     from scipy.signal import savgol_filter
     from scipy.ndimage import uniform_filter1d
 
     Nx = len(X)
+    Ny = len(Y)
     Nt = len(t)
+    NN = Nx * Ny
 
-    T = qs[:Nx, :]
-    S = qs[Nx:, :]
+    S = qs[NN:, :]
 
-    if dim == 1:
+    if dim == '1D':
         mask = np.zeros((Nx, Nt))
         for j in reversed(range(Nt)):
             if j > Nt // 4:
                 mask[:, j] = 1
             else:
                 mask[:, j] = S[:, j + Nt // 2]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
-    elif dim == 2:
-        pass
+    elif dim == '2D':
+        mask = np.zeros((NN, Nt))
+        for j in reversed(range(Nt)):
+            if j > Nt // 4:
+                mask[:, j] = 1
+            else:
+                mask[:, j] = 1  # S[:, j + Nt // 2]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
     else:
         print('Implement masking first!!!!!!!')
 

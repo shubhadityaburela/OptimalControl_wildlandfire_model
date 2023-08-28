@@ -27,6 +27,8 @@ class Wildfire:
         # First we define the public variables of the class. All the variables with "__" in front are private variables
         self.X = None
         self.Y = None
+        self.X_2D = None
+        self.Y_2D = None
         self.dx = None
         self.dy = None
         self.t = None
@@ -41,7 +43,7 @@ class Wildfire:
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
         self.Nt = timesteps
-        self.cfl = 1.0
+        self.cfl = 0.1   # 1.0 / np.sqrt(2)
 
         self.M = self.NumConservedVar * self.Nxi * self.Neta
 
@@ -49,55 +51,70 @@ class Wildfire:
         self.__firstderivativeOrder = "5thOrder"
 
         # Dimensional constants used in the model
-        self.__k = 0.2136
-        self.__gamma_s = 0.1625
-        self.__v_x = jnp.zeros(self.Nt)
-        self.__v_y = jnp.zeros(self.Nt)
-        self.__alpha = 187.93
-        self.__gamma = 4.8372e-5
-        self.__mu = 558.49
-        self.__T_a = 300
-        self.__speedofsoundsquare = 1
+        self.k = 0.2136
+        self.gamma_s = 0.1625
+        self.v_x = 0.2 * np.ones(self.Nt)
+        self.v_y = np.zeros(self.Nt)
+        self.alpha = 187.93
+        self.gamma = 4.8372e-5
+        self.mu = 558.49
+        self.T_a = 300
+        self.speedofsoundsquare = 1
 
         # Sparse matrices of the first and second order
         self.Mat_primal = None
         self.Mat_adjoint = None
 
         # Reference variables
-        self.T_ref = self.__mu
+        self.T_ref = self.mu
         self.S_ref = 1
-        self.x_ref = jnp.sqrt(self.__k * self.__mu) / jnp.sqrt(self.__alpha)
-        self.t_ref = self.__mu / self.__alpha
+        self.x_ref = np.sqrt(self.k * self.mu) / np.sqrt(self.alpha)
+        self.y_ref = np.sqrt(self.k * self.mu) / np.sqrt(self.alpha)
+        self.t_ref = self.mu / self.alpha
+        self.v_x_ref = self.x_ref / self.t_ref
+        self.v_y_ref = self.y_ref / self.t_ref
 
     def Grid(self):
-        self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi / self.x_ref
+        self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi / self.x_ref
         self.dx = self.X[1] - self.X[0]
 
         if self.Neta == 1:
-            self.Y = 0
-            self.dy = 0
+            self.Y = np.asarray([1])
+            self.dy = 1
+
+            dt = self.dx * self.cfl / np.sqrt(self.speedofsoundsquare)
         else:
-            self.Y = jnp.arange(1, self.Neta + 1) * self.Leta / self.Neta
+            self.Y = np.arange(1, self.Neta + 1) * self.Leta / self.Neta / self.y_ref
             self.dy = self.Y[1] - self.Y[0]
 
-        dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / jnp.sqrt(self.__speedofsoundsquare)
-        t = dt * jnp.arange(self.Nt)
+            dt = (np.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / np.sqrt(self.speedofsoundsquare)
 
+            self.X_2D, self.Y_2D = np.meshgrid(self.X, self.Y)
+            self.X_2D = np.transpose(self.X_2D)
+            self.Y_2D = np.transpose(self.Y_2D)
+
+        t = dt * np.arange(self.Nt)
         self.t = t / self.t_ref
         self.dt = self.t[1] - self.t[0]
 
+
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            T = 1200 * jnp.exp(-((self.X - self.Lxi / (2 * self.x_ref)) ** 2) / 200) / self.T_ref
-            S = jnp.ones_like(T) / self.S_ref
+            T = 1200 * np.exp(-((self.X - self.Lxi / (2 * self.x_ref)) ** 2) / 200) / self.T_ref
+            S = np.ones_like(T) / self.S_ref
         else:
-            T = 1200 * jnp.exp(-(((self.X - self.Lxi / 2) ** 2) / 200 + ((self.Y - self.Leta / 2) ** 2) / 200))
-            S = jnp.ones_like(T)
+            T = 1200 * np.exp(-(((self.X_2D - self.Lxi / (2 * self.x_ref)) ** 2) / 200 +
+                                ((self.Y_2D - self.Leta / (2 * self.y_ref)) ** 2) / 200)) / self.T_ref
+            S = np.ones_like(T) / self.S_ref
 
-            # Arrange the values of T and S in 'q'
-        T = jnp.reshape(T, newshape=self.NN, order="F")
-        S = jnp.reshape(S, newshape=self.NN, order="F")
-        q = jnp.array(jnp.concatenate((T, S)))
+        # Arrange the values of T and S in 'q'
+        T = np.reshape(T, newshape=self.NN, order="F")
+        S = np.reshape(S, newshape=self.NN, order="F")
+        q = np.array(np.concatenate((T, S)))
+
+        # Non-dimensionalize the velocities
+        self.v_x = self.v_x / self.v_x_ref
+        self.v_y = self.v_y / self.v_y_ref
 
         return q
 
@@ -116,7 +133,7 @@ class Wildfire:
 
         # This array is a masking array that becomes 1 if the T is greater than 0 and 0 if not. It activates
         # the arrhenius term
-        arrhenius_activate = jnp.where(T > 0, 1, 0)
+        arrhenius_activate = np.where(T > 0, 1, 0)
 
         # This parameter is for preventing division by 0
         epsilon = 1e-8
@@ -124,23 +141,23 @@ class Wildfire:
         # Coefficients for the terms in the equation
         Coeff_diff = 1.0
 
-        Coeff_conv_x = self.__v_x.at[0].get()
-        Coeff_conv_y = self.__v_y.at[0].get()
+        Coeff_conv_x = self.v_x[0]
+        Coeff_conv_y = self.v_y[0]
 
         Coeff_react_1 = 1.0
-        Coeff_react_2 = self.__gamma * self.__mu
-        Coeff_react_3 = (self.__mu * self.__gamma_s / self.__alpha)
+        Coeff_react_2 = self.gamma * self.mu
+        Coeff_react_3 = (self.mu * self.gamma_s / self.alpha)
 
         DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
         Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_react_2 * T + \
-               Coeff_react_1 * arrhenius_activate * S * jnp.exp(-1.0 / (jnp.maximum(T, epsilon))) + m_T * f_T
-        Sdot = - Coeff_react_3 * arrhenius_activate * S * jnp.exp(-1.0 / (jnp.maximum(T, epsilon))) + m_S * f_S
+               Coeff_react_1 * arrhenius_activate * S * np.exp(-1.0 / (np.maximum(T, epsilon))) + m_T * f_T
+        Sdot = - Coeff_react_3 * arrhenius_activate * S * np.exp(-1.0 / (np.maximum(T, epsilon))) + m_S * f_S
 
-        qdot = jnp.array(jnp.concatenate((Tdot, Sdot)))
+        qdot = np.array(np.concatenate((Tdot, Sdot)))
 
         return qdot
 
-    def TimeIntegration_primal(self, q0, f0=None, sigma=None, ti_method="bdf4"):
+    def TimeIntegration_primal(self, q, f0=None, sigma=None, ti_method="bdf4"):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
         self.Mat_primal = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
@@ -148,35 +165,28 @@ class Wildfire:
 
         # Time loop
         if ti_method == "rk4":
-            # Time loop
-            qs = jnp.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
-            qs = qs.at[:, 0].set(q0)
+            qs = np.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
+            for n in range(self.Nt):
+                q = self.rk4(self.RHS_primal, q, self.dt, f0[:, n], sigma[:, n])
+                qs[:, n] = q
 
-            @jax.jit
-            def body(n, qs_):
-                # Main Runge-Kutta 4 solver step
-                h = self.rk4(self.RHS_primal, qs_[:, n - 1], self.dt, f0[:, n], sigma[:, n])
-                return qs_.at[:, n].set(h)
-
-            return jax.lax.fori_loop(1, self.Nt, body, qs)
-
+            return qs
         elif ti_method == "bdf4":
-
-            @jax.jit
-            def body(x, u, *args):
-                return self.RHS_primal(x, u, *args)
-
-            return self.bdf4(f=body, tt=self.t, x0=q0, uu=f0.T,
-                             func_args=(sigma.T,)).T
+            pass
 
     def InitialConditions_adjoint(self):
-        T_adj = jnp.zeros_like(self.X) / self.T_ref
-        S_adj = jnp.zeros_like(T_adj) / self.S_ref
+        if self.Neta == 1:
+            T_adj = np.zeros_like(self.X) / self.T_ref
+            S_adj = np.zeros_like(T_adj) / self.S_ref
+        else:
+            T_adj = np.zeros_like(self.X_2D) / self.T_ref
+            S_adj = np.zeros_like(T_adj) / self.S_ref
+
 
         # Arrange the values of T_adj and S_adj in 'q_adj'
-        T_adj = jnp.reshape(T_adj, newshape=self.NN, order="F")
-        S_adj = jnp.reshape(S_adj, newshape=self.NN, order="F")
-        q_adj = jnp.array(jnp.concatenate((T_adj, S_adj)))
+        T_adj = np.reshape(T_adj, newshape=self.NN, order="F")
+        S_adj = np.reshape(S_adj, newshape=self.NN, order="F")
+        q_adj = np.array(np.concatenate((T_adj, S_adj)))
 
         return q_adj
 
@@ -193,28 +203,27 @@ class Wildfire:
 
         # This array is a masking array that becomes 1 if the T is greater than 0 and 0 if not. It activates
         # the arrhenius term
-        arrhenius_activate = jnp.where(T > 0, 1, 0)
+        arrhenius_activate = np.where(T > 0, 1, 0)
         # This parameter is for preventing division by 0
         epsilon = 1e-8
 
         # Control parameters
-        cp_1 = self.__gamma * self.__mu
-        cp_2 = self.__mu * self.__gamma_s / self.__alpha
+        cp_1 = self.gamma * self.mu
+        cp_2 = self.mu * self.gamma_s / self.alpha
 
-        DT = self.__v_x.at[0].get() * self.Mat_adjoint.Grad_Xi_kron + self.__v_y.at[
-            0].get() * self.Mat_adjoint.Grad_Eta_kron
+        DT = self.v_x[0] * self.Mat_adjoint.Grad_Xi_kron + self.v_y[0] * self.Mat_adjoint.Grad_Eta_kron
         T_adj_dot = - self.Mat_adjoint.Laplace.dot(T_adj) - DT.dot(T_adj) - arrhenius_activate * \
-                    (S * jnp.exp(-1 / (jnp.maximum(T, epsilon))) * (1 / (jnp.maximum(T, epsilon)) ** 2) *
-                     T_adj + jnp.exp(-1 / (jnp.maximum(T, epsilon))) * S_adj) + cp_1 * T_adj - T_var * (T - T_tar)
-        S_adj_dot = arrhenius_activate * (cp_2 * S * jnp.exp(-1 / (jnp.maximum(T, epsilon))) *
-                                          (1 / (jnp.maximum(T, epsilon)) ** 2) * T_adj +
-                                          cp_2 * jnp.exp(-1 / (jnp.maximum(T, epsilon))) * S_adj) - S_var * (S - S_tar)
+                     (S * np.exp(-1 / (np.maximum(T, epsilon))) * (1 / (np.maximum(T, epsilon)) ** 2) *
+                      T_adj + np.exp(-1 / (np.maximum(T, epsilon))) * S_adj) + cp_1 * T_adj - T_var * (T - T_tar)
+        S_adj_dot = arrhenius_activate * (cp_2 * S * np.exp(-1 / (np.maximum(T, epsilon))) *
+                                          (1 / (np.maximum(T, epsilon)) ** 2) * T_adj +
+                                          cp_2 * np.exp(-1 / (np.maximum(T, epsilon))) * S_adj) - S_var * (S - S_tar)
 
-        q_adj_dot = jnp.array(jnp.concatenate((T_adj_dot, S_adj_dot)))
+        q_adj_dot = np.array(np.concatenate((T_adj_dot, S_adj_dot)))
 
         return q_adj_dot
 
-    def TimeIntegration_adjoint(self, qt_adj, f0, qs, qs_target, ti_method="bdf4", dict_args=None):
+    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="bdf4", dict_args=None):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
         self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
@@ -223,42 +232,34 @@ class Wildfire:
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            qs_adj = jnp.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
-            qs_adj = qs_adj.at[:, -1].set(qt_adj)
+            qs_adj = np.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
+            qs_adj[:, -1] = q0_adj
+            for n in range(1, self.Nt):
+                q = self.rk4(self.RHS_adjoint, qs_adj[:, -n], -self.dt, f0[:, -(n + 1)],
+                             qs[:, -(n + 1)], qs_target[:, -(n + 1)], dict_args['T_var'],
+                             dict_args['S_var'])
+                qs_adj[:, -(n + 1)] = q
 
-            @jax.jit
-            def body(n, qs_adj_):
-                # Main Runge-Kutta 4 solver step
-                h = self.rk4(self.RHS_adjoint, qs_adj_[:, -n], -self.dt, f0[:, -(n + 1)],
-                             qs[:, -(n + 1)], qs_target[:, -(n + 1)], dict_args['T_var'], dict_args['S_var'])
-                return qs_adj_.at[:, -(n + 1)].set(h)
-
-            return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
-
+            return qs_adj
         elif ti_method == "bdf4":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args, dict_args['T_var'], dict_args['S_var'])
-
-            return self.bdf4(f=body, tt=self.t, x0=qt_adj, uu=f0.T,
-                             func_args=(qs.T, qs_target.T,),
-                             type='backward').T
+            pass
 
     def ReDim_grid(self):
-        self.X = self.X.at[:].set(self.X.at[:].get() * self.x_ref)
-        self.t = self.t.at[:].set(self.t.at[:].get() * self.t_ref)
+        self.X = self.X * self.x_ref
+        self.Y = self.Y * self.y_ref
+        self.t = self.t * self.t_ref
 
     def ReDim_qs(self, qs):
-        qs = qs.at[:self.NN, :].set(qs.at[:self.NN, :].get() * self.T_ref)
-        qs = qs.at[self.NN:, :].set(qs.at[self.NN:, :].get() * self.S_ref)
+        qs[:self.NN, :] = qs[:self.NN, :] * self.T_ref
+        qs[self.NN:, :] = qs[self.NN:, :] * self.S_ref
 
         return qs
 
     @staticmethod
     def rk4(RHS: callable,
-            u0: jnp.ndarray,
+            u0: np.ndarray,
             dt,
-            *args) -> jnp.ndarray:
+            *args) -> np.ndarray:
 
         k1 = RHS(u0, *args)
         k2 = RHS(u0 + dt / 2 * k1, *args)

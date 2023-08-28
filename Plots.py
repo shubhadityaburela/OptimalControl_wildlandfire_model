@@ -102,8 +102,9 @@ class PlotFlow:
 
         fig.savefig(immpath + name, dpi=300, transparent=True)
 
-    def plot2D(self, Q, save_plot=False, plot_every=10, plot_at_all=False):
-        Q = np.reshape(np.transpose(Q), newshape=[self.Nt, 2, self.Nx, self.Ny], order="F")
+    def plot2D(self, Q, name, immpath, save_plot=False, plot_every=10, plot_at_all=False):
+        Q_T = np.reshape(np.transpose(Q[:self.Nx * self.Ny]), newshape=[self.Nt, self.Nx, self.Ny], order="F")
+        Q_S = np.reshape(np.transpose(Q[self.Nx * self.Ny:]), newshape=[self.Nt, self.Nx, self.Ny], order="F")
 
         if plot_at_all:
             if not save_plot:
@@ -115,10 +116,12 @@ class PlotFlow:
                         max_T = np.max(Q[n, 0, :, :])
                         min_S = np.min(Q[n, 1, :, :])
                         max_S = np.max(Q[n, 1, :, :])
-                        ax[0].pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q[n, 0, :, :]), vmin=min_T, vmax=max_T, cmap='YlOrRd')
+                        ax[0].pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q[n, 0, :, :]), vmin=min_T,
+                                         vmax=max_T, cmap='YlOrRd')
                         ax[0].axis('scaled')
                         ax[0].set_title("T")
-                        ax[1].pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q[n, 1, :, :]), vmin=min_S, vmax=max_S, cmap='YlGn')
+                        ax[1].pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q[n, 1, :, :]), vmin=min_S,
+                                         vmax=max_S, cmap='YlGn')
                         ax[1].axis('scaled')
                         ax[1].set_title("S")
 
@@ -130,18 +133,18 @@ class PlotFlow:
                         ax[0].cla()
                         ax[1].cla()
             else:
-                immpath = "./plots/FOM_2D/primal/"
                 os.makedirs(immpath, exist_ok=True)
                 for n in range(self.Nt):
                     if n % plot_every == 0:
-                        min_T = np.min(Q[n, 0, :, :])
-                        max_T = np.max(Q[n, 0, :, :])
-                        min_S = np.min(Q[n, 1, :, :])
-                        max_S = np.max(Q[n, 1, :, :])
+                        min_T = np.min(Q_T[n, :, :])
+                        max_T = np.max(Q_T[n, :, :])
+                        min_S = np.min(Q_S[n, :, :])
+                        max_S = np.max(Q_S[n, :, :])
 
                         fig = plt.figure(figsize=(10, 5))
                         ax1 = fig.add_subplot(121)
-                        im1 = ax1.pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q[n, 0, :, :]), vmin=min_T, vmax=max_T, cmap='YlOrRd')
+                        im1 = ax1.pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q_T[n, :, :]), vmin=min_T,
+                                             vmax=max_T, cmap='YlOrRd')
                         ax1.axis('scaled')
                         ax1.set_title(r"$T(x, y)$")
                         ax1.set_yticks([], [])
@@ -151,7 +154,8 @@ class PlotFlow:
                         fig.colorbar(im1, cax=cax, orientation='vertical')
 
                         ax2 = fig.add_subplot(122)
-                        im2 = ax2.pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q[n, 1, :, :]), vmin=min_S, vmax=max_S, cmap='YlGn')
+                        im2 = ax2.pcolormesh(self.X_2D_grid, self.Y_2D_grid, np.squeeze(Q_S[n, :, :]), vmin=min_S,
+                                             vmax=max_S, cmap='YlGn')
                         ax2.axis('scaled')
                         ax2.set_title(r"$S(x, y)$")
                         ax2.set_yticks([], [])
@@ -163,13 +167,12 @@ class PlotFlow:
                         fig.supylabel(r"space $y$")
                         fig.supxlabel(r"space $x$")
 
-                        fig.savefig(immpath + "Var" + str(n), dpi=300, transparent=True)
-                        fig.savefig(immpath + "Var" + str(n), format="pdf", bbox_inches="tight", transparent=True)
+                        fig.savefig(immpath + name + str(n), dpi=300, transparent=True)
                         plt.close(fig)
 
-                fps = 1
-                image_files = sorted(glob.glob(os.path.join(immpath, "*.png")), key=os.path.getmtime)
-                clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(image_files, fps=fps)
-                clip.write_videofile(immpath + "Var" + '.mp4')
+                # fps = 1
+                # image_files = sorted(glob.glob(os.path.join(immpath, "*.png")), key=os.path.getmtime)
+                # clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(image_files, fps=fps)
+                # clip.write_videofile(immpath + name + '.mp4')
         else:
             pass
