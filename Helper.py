@@ -1,10 +1,11 @@
 import numpy as np
 from sklearn.utils.extmath import randomized_svd
+from scipy.sparse import diags, bmat
 
 
 def L2norm(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dt'))
+    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dt'))
 
 
 def Calc_Cost(as_, as_target, f, lamda, **kwargs):
@@ -12,8 +13,8 @@ def Calc_Cost(as_, as_target, f, lamda, **kwargs):
     N = kwargs.get('Nx')
     aT_res = as_[:n_rom_T, :] - as_target[:n_rom_T, :]
     aS_res = as_[n_rom_T:, :] - as_target[n_rom_T:, :]
-    f_T = f[:N, :]
-    f_S = f[N:, :]
+    f_T = f
+    f_S = np.zeros_like(f)
 
     cost_T = (lamda['T_var'] / 2) * (L2norm(aT_res, **kwargs)) ** 2 + \
              (lamda['T_reg'] / 2) * (L2norm(f_T, **kwargs)) ** 2
@@ -23,50 +24,40 @@ def Calc_Cost(as_, as_target, f, lamda, **kwargs):
     return cost_T + cost_S
 
 
-def Calc_Grad(lamda, sigma, f, V, as_adj, **kwargs):
+def Calc_Grad(lamda, psi, f, V, as_adj, **kwargs):
     N = kwargs.get('Nx')
     qs_adj = V @ as_adj
-
-    T_adj = qs_adj[:N, :]
-    S_adj = qs_adj[N:, :]
-    f_T = f[:N, :]
-    f_S = f[N:, :]
-    sigma_T = lamda['T_sig'] * sigma[:N, :]
-    sigma_S = lamda['S_sig'] * sigma[N:, :]
-
-    dL_du = jnp.zeros_like(f)
-    dL_du = dL_du.at[:N, :].set(lamda['T_reg'] * f_T + jnp.multiply(sigma_T, T_adj))
-    dL_du = dL_du.at[N:, :].set(lamda['S_reg'] * f_S + jnp.multiply(sigma_S, S_adj))
+    dL_du = lamda['T_reg'] * f + psi.transpose() @ qs_adj
     return dL_du
 
 
-def Update_Control(f, omega, lamda, sigma, a0_primal, V, as_adj, as_target, MAT_p, J_prev, max_Armijo_iter,
+def Update_Control(f, omega, lamda, psi, a0_primal, V, as_adj, as_target, MAT_p, J_prev, max_Armijo_iter,
                    wf, delta, ti_method, red_nl, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
+    dL_du = Calc_Grad(lamda, psi, f, V, as_adj, **kwargs)
     for k in range(max_Armijo_iter):
-        dL_du = Calc_Grad(lamda, sigma, f, V, as_adj, **kwargs)
         f_new = f - omega * dL_du
 
         # Solve the primal equation
-        as_ = wf.TimeIntegration_primal_ROM(a0_primal, V, MAT_p, f, ti_method, red_nl, **kwargs)
+        as_ = wf.TimeIntegration_primal_ROM(a0_primal, V, MAT_p, f_new, ti_method, red_nl, **kwargs)
 
-        if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
+        if np.isnan(as_).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif jnp.isnan(as_).any() and k == max_Armijo_iter - 1:
+        elif np.isnan(as_).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost(as_, as_target, f, lamda, **kwargs)
+            J = Calc_Cost(as_, as_target, f_new, lamda, **kwargs)
             dJ = J_prev - delta * omega * L2norm(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
                 return f_opt, J_opt, L2norm(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
+            elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
@@ -89,15 +80,6 @@ def Update_Control(f, omega, lamda, sigma, a0_primal, V, as_adj, as_target, MAT_
                               f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
 
-            # Reproject the time amplitudes into current basis
-            qs = V @ as_
-
-            # Update the basis
-            V = compute_red_basis(qs, **kwargs)
-
-            # Offline system matrix assembly
-            MAT_p = wf.DEIM_Mat_primal(V, qs, **kwargs)
-
 
 def Calc_target_val(qs, *args, kind='exp_decay', **kwargs):
     N = kwargs.get('Nx')
@@ -107,9 +89,9 @@ def Calc_target_val(qs, *args, kind='exp_decay', **kwargs):
     S = qs[N:]
 
     if kind == 'exp_decay':
-        exp_T = jnp.tile(jnp.exp(-0.1 * t), (N, 1))
-        T = jnp.multiply(T, exp_T)
-        S = jnp.multiply(S, (T > 0).astype(int))
+        exp_T = np.tile(np.exp(-0.1 * t), (N, 1))
+        T = np.multiply(T, exp_T)
+        S = np.multiply(S, (T > 0).astype(int))
 
         # import matplotlib.pyplot as plt
         # X_grid, t_grid = np.meshgrid(X, t)
@@ -122,10 +104,10 @@ def Calc_target_val(qs, *args, kind='exp_decay', **kwargs):
         # plt.show()
         # exit()
 
-        return jnp.concatenate((T, S), axis=0)  # Target value of the variable
+        return np.concatenate((T, S), axis=0)  # Target value of the variable
 
     elif kind == 'zero':
-        return jnp.concatenate((jnp.zeros_like(T), jnp.ones_like(S)), axis=0)  # Target value of the variable
+        return np.concatenate((np.zeros_like(T), np.ones_like(S)), axis=0)  # Target value of the variable
 
 
 from jax import jit, jacobian
@@ -214,18 +196,52 @@ def Force_masking(qs, X, Y, t, dim=1):
     return mask
 
 
+def ControlSelectionMatrix(wf, n_c):
+    psi_v = np.zeros((wf.Nxi, n_c))
+
+    ignition_zone = wf.Nxi // 5
+    non_ignition_zone = wf.Nxi - ignition_zone
+
+    left_ignition_index = np.split(np.arange(0, non_ignition_zone // 2), n_c // 2)
+    ignition_zone_index = np.arange(non_ignition_zone // 2, non_ignition_zone // 2 + ignition_zone)
+    right_ignition_index = np.split(np.arange(non_ignition_zone // 2 + ignition_zone, wf.Nxi), n_c // 2)
+
+    for i in range(len(left_ignition_index)):
+        left_ignition_index[i][:] = i
+    for i in range(len(right_ignition_index)):
+        right_ignition_index[i][:] = i + n_c // 2
+    ignition_index = np.ones(ignition_zone) * left_ignition_index[-1][0]
+
+    fill_column = np.concatenate((np.concatenate(left_ignition_index, axis=0),
+                                  ignition_index,
+                                  (np.concatenate(right_ignition_index, axis=0))))
+
+    replace_values = np.ones_like(fill_column)
+    replace_values[ignition_zone_index] = 0
+
+    np.put_along_axis(psi_v, fill_column[:, None].astype(int), replace_values[:, None], axis=1)
+    psi = np.concatenate((psi_v, np.zeros_like(psi_v)), axis=0)
+
+    return psi
+
+
 def NL(T, S):
-    arr_act = jnp.where(T > 0, 1, 0)
+    arr_act = np.where(T > 0, 1, 0)
     epsilon = 1e-8
 
-    return arr_act * S * jnp.exp(-1 / (jnp.maximum(T, epsilon)))
+    return arr_act * S * np.exp(-1 / (np.maximum(T, epsilon)))
 
 
 def NL_Jac(T, S):
-    pass
+    arr_act = np.where(T > 0, 1, 0)
+    epsilon = 1e-8
 
+    q00 = np.squeeze(np.asarray(- arr_act * S * np.exp(-1 / (np.maximum(T, epsilon))) / (np.maximum(T, epsilon)) ** 2))
+    q01 = np.squeeze(np.asarray(arr_act * np.exp(-1 / (np.maximum(T, epsilon)))))
 
+    Jac = bmat([[diags(q00), diags(q01)]])
 
+    return Jac
 
 
 def compute_red_basis(qs, **kwargs):
