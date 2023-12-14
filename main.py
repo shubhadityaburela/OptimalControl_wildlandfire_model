@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "2D"
-Nxi = 500
-Neta = 500
-Nt = 500
+Nxi = 250
+Neta = 250
+Nt = 400
 
 # Wildfire solver initialization along with grid initialization
 wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
@@ -47,8 +47,39 @@ np.save(impath + 'sigma.npy', sigma)
 np.save(impath + 'qs_org.npy', qs)
 sigma = np.load(impath + 'sigma.npy')
 
+
+# sig_S = np.reshape(np.transpose(sigma[wf.Nxi * wf.Neta:]), newshape=[wf.Nt, wf.Nxi, wf.Neta], order="F")
+# T = np.reshape(np.transpose(qs[:wf.Nxi * wf.Neta]), newshape=[wf.Nt, wf.Nxi, wf.Neta], order="F")
+# X_2D_grid, Y_2D_grid = np.meshgrid(wf.X, wf.Y)
+# X_2D_grid = np.transpose(X_2D_grid)
+# Y_2D_grid = np.transpose(Y_2D_grid)
+# plt.ion()
+# fig, ax = plt.subplots(1, 2)
+# for n in range(wf.Nt):
+#     if n % 10 == 0:
+#         min_T = np.min(T[n, :, :])
+#         max_T = np.max(T[n, :, :])
+#         ax[0].pcolormesh(X_2D_grid, Y_2D_grid, np.squeeze(T[n, :, :]), vmin=min_T, vmax=max_T, cmap='YlOrRd')
+#         ax[0].axis('scaled')
+#         ax[0].set_title("T")
+#         ax[1].pcolormesh(X_2D_grid, Y_2D_grid, np.squeeze(sig_S[n, :, :]), cmap='YlGn')
+#         ax[1].axis('scaled')
+#         ax[1].set_title("sig")
+#
+#         fig.supylabel(r"$Y$")
+#         fig.supxlabel(r"$X$")
+#
+#         plt.draw()
+#         plt.pause(0.5)
+#         ax[0].cla()
+#         ax[1].cla()
+# exit()
+
+
+
+
 # Optimal control
-max_opt_steps = 100
+max_opt_steps = 20
 verbose = True
 lamda = {'T_var': 1, 'S_var': 0, 'T_reg': 1e1, 'S_reg': 0, 'T_sig': 1, 'S_sig': 0}  # weights and regularization parameter
 omega = 1  # initial step size for gradient update

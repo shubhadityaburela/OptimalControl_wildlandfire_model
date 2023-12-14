@@ -201,7 +201,7 @@ def Force_masking(qs, X, Y, t, dim):
             if j > Nt // 4:
                 mask[:, j] = 1
             else:
-                mask[:, j] = 1  # S[:, j + Nt // 2]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
+                mask[:, j] = 1   # S[:, j + Nt // 2]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
     else:
         print('Implement masking first!!!!!!!')
 
