@@ -8,31 +8,16 @@ def L2norm(q, **kwargs):
 
 def Calc_Cost(q, q_target, f, lamda, **kwargs):
     NN = kwargs.get('Nx') * kwargs.get('Ny')
-    T_res = q[:NN, :] - q_target[:NN, :]
-    S_res = q[NN:, :] - q_target[NN:, :]
-    f_T = f[:NN, :]
-    f_S = f[NN:, :]
 
-    cost_T = (lamda['T_var'] / 2) * (L2norm(T_res, **kwargs)) ** 2 + \
-             (lamda['T_reg'] / 2) * (L2norm(f_T, **kwargs)) ** 2
-    cost_S = (lamda['S_var'] / 2) * (L2norm(S_res, **kwargs)) ** 2 + \
-             (lamda['S_reg'] / 2) * (L2norm(f_S, **kwargs)) ** 2
+    q_res = q - q_target
+    cost = 1 / 2 * (L2norm(q_res, **kwargs)) ** 2 + (lamda['q_reg'] / 2) * (L2norm(f, **kwargs)) ** 2
 
-    return cost_T + cost_S
+    return cost
 
 
 def Calc_Grad(lamda, sigma, f, qs_adj, **kwargs):
-    NN = kwargs.get('Nx') * kwargs.get('Ny')
-    T_adj = qs_adj[:NN, :]
-    S_adj = qs_adj[NN:, :]
-    f_T = f[:NN, :]
-    f_S = f[NN:, :]
-    sigma_T = lamda['T_sig'] * sigma[:NN, :]
-    sigma_S = lamda['S_sig'] * sigma[NN:, :]
 
-    dL_du = np.zeros_like(f)
-    dL_du[:NN, :] = lamda['T_reg'] * f_T + np.multiply(sigma_T, T_adj)
-    dL_du[NN:, :] = lamda['S_reg'] * f_S + np.multiply(sigma_S, S_adj)
+    dL_du = lamda['q_reg'] * f + np.multiply(sigma, qs_adj)
 
     return dL_du
 
@@ -152,29 +137,8 @@ def scipy_root(f, Df=None):
 
 def Calc_target_val(qs, wf, kind='exp_decay', **kwargs):
     NN = kwargs.get('Nx') * kwargs.get('Ny')
-    T = qs[:NN]
-    S = qs[NN:]
 
-    if kind == 'exp_decay':
-        exp_T = np.tile(np.exp(-0.1 * wf.t), (NN, 1))
-        T = np.multiply(T, exp_T)
-        S = np.multiply(S, (T > 0).astype(int))
-
-        # import matplotlib.pyplot as plt
-        # X_grid, t_grid = np.meshgrid(X, t)
-        # X_grid = X_grid.T
-        # t_grid = t_grid.T
-        # ax = plt.axes(projection='3d')
-        # ax.plot_surface(X_grid, t_grid, T, rstride=1, cstride=1,
-        #                 cmap='viridis', edgecolor='none')
-        # ax.set_title('surface')
-        # plt.show()
-        # exit()
-
-        return np.concatenate((T, S), axis=0)  # Target value of the variable
-
-    elif kind == 'zero':
-        return np.concatenate((np.zeros_like(T), np.ones_like(S)), axis=0)  # Target value of the variable
+    return np.zeros_like(qs)  # Target value of the variable
 
 
 def Force_masking(qs, X, Y, t, dim):
@@ -182,19 +146,15 @@ def Force_masking(qs, X, Y, t, dim):
     from scipy.ndimage import uniform_filter1d
 
     Nx = len(X)
-    Ny = len(Y)
     Nt = len(t)
-    NN = Nx * Ny
-
-    S = qs[NN:, :]
 
     if dim == '1D':
         mask = np.zeros((Nx, Nt))
         for j in reversed(range(Nt)):
-            if j > Nt // 4:
+            if j > 3 * Nt // 4:
                 mask[:, j] = 1
             else:
-                mask[:, j] = S[:, j + Nt // 2]  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
+                mask[:, j] = 0  # uniform_filter1d(S[:, j + Nt // 4], size=10, mode="nearest")
     elif dim == '2D':
         mask = np.zeros((NN, Nt))
         for j in reversed(range(Nt)):

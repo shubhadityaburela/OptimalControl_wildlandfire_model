@@ -16,13 +16,13 @@ np.set_printoptions(threshold=sys.maxsize, linewidth=300)
 import matplotlib.pyplot as plt
 
 # Problem variables
-Dimension = "2D"
-Nxi = 250
-Neta = 250
-Nt = 400
+Dimension = "1D"
+Nxi = 200
+Neta = 1
+Nt = 500
 
 # Wildfire solver initialization along with grid initialization
-wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt)
+wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -32,59 +32,27 @@ kwargs = {
     'Nx': wf.Nxi,
     'Ny': wf.Neta,
     'Nt': wf.Nt,
-    'Nc': wf.NumConservedVar
 }
 
 # Solve for sigma and the target values
 impath = "./data/"
 os.makedirs(impath, exist_ok=True)
-f_ = np.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))
+f_ = np.zeros((wf.Nxi * wf.Neta, wf.Nt))
 s_ = np.zeros_like(f_)
 qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_, s_, ti_method="rk4")
 sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=Dimension)
-sigma = np.tile(sigma, (2, 1))
 np.save(impath + 'sigma.npy', sigma)
 np.save(impath + 'qs_org.npy', qs)
 sigma = np.load(impath + 'sigma.npy')
 
 
-# sig_S = np.reshape(np.transpose(sigma[wf.Nxi * wf.Neta:]), newshape=[wf.Nt, wf.Nxi, wf.Neta], order="F")
-# T = np.reshape(np.transpose(qs[:wf.Nxi * wf.Neta]), newshape=[wf.Nt, wf.Nxi, wf.Neta], order="F")
-# X_2D_grid, Y_2D_grid = np.meshgrid(wf.X, wf.Y)
-# X_2D_grid = np.transpose(X_2D_grid)
-# Y_2D_grid = np.transpose(Y_2D_grid)
-# plt.ion()
-# fig, ax = plt.subplots(1, 2)
-# for n in range(wf.Nt):
-#     if n % 10 == 0:
-#         min_T = np.min(T[n, :, :])
-#         max_T = np.max(T[n, :, :])
-#         ax[0].pcolormesh(X_2D_grid, Y_2D_grid, np.squeeze(T[n, :, :]), vmin=min_T, vmax=max_T, cmap='YlOrRd')
-#         ax[0].axis('scaled')
-#         ax[0].set_title("T")
-#         ax[1].pcolormesh(X_2D_grid, Y_2D_grid, np.squeeze(sig_S[n, :, :]), cmap='YlGn')
-#         ax[1].axis('scaled')
-#         ax[1].set_title("sig")
-#
-#         fig.supylabel(r"$Y$")
-#         fig.supxlabel(r"$X$")
-#
-#         plt.draw()
-#         plt.pause(0.5)
-#         ax[0].cla()
-#         ax[1].cla()
-# exit()
-
-
-
-
 # Optimal control
-max_opt_steps = 20
+max_opt_steps = 50
 verbose = True
-lamda = {'T_var': 1, 'S_var': 0, 'T_reg': 1e1, 'S_reg': 0, 'T_sig': 1, 'S_sig': 0}  # weights and regularization parameter
+lamda = {'q_reg': 1e-1}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
-f = np.zeros((wf.NumConservedVar * wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
+f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = Calc_target_val(qs, wf, kind='zero', **kwargs)  # Target value for the optimization step
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
@@ -173,10 +141,6 @@ qs_opt = np.load(impath + 'qs_opt.npy')
 qs_adj_opt = np.load(impath + 'qs_adj_opt.npy')
 f_opt = np.load(impath + 'f_opt.npy')
 
-# Re-dimensionalize the grid and the solution
-wf.ReDim_grid()
-qs_org = wf.ReDim_qs(qs_org)
-qs_opt = wf.ReDim_qs(qs_opt)
 
 # Plot the results
 pf = PlotFlow(wf.X, wf.Y, wf.t)
@@ -185,6 +149,7 @@ if Dimension == "1D":
     pf.plot1D(qs_opt, name="qs_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/FOM_1D/")
+    pf.plot1D(sigma, name="sigma", immpath="./plots/FOM_1D/")
 else:
     pf.plot2D(qs_org, name="qs_org", immpath="./plots/FOM_2D/",
               save_plot=True, plot_every=10, plot_at_all=True)

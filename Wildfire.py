@@ -18,8 +18,10 @@ import math
 
 
 class Wildfire:
-    def __init__(self, Nxi: int, Neta: int, timesteps: int) -> None:
+    def __init__(self, Nxi: int, Neta: int, timesteps: int, cfl: float) -> None:
         # Assertion statements for checking the sanctity of the input variables
+        self.Mat_adjoint = None
+        self.Mat_primal = None
         assert Nxi > 0, f"Please input sensible values for the X grid points"
         assert Neta > 0, f"Please input sensible values for the Y grid points"
         assert timesteps >= 0, f"Please input sensible values for time steps"
@@ -34,138 +36,78 @@ class Wildfire:
         self.t = None
         self.dt = None
 
-        self.NumConservedVar = 2
-
         # Private variables
-        self.Lxi = 125
-        self.Leta = 125
+        self.Lxi = 100
+        self.Leta = 1
         self.Nxi = Nxi
         self.Neta = Neta
         self.NN = self.Nxi * self.Neta
         self.Nt = timesteps
-        self.cfl = 0.28   # 1.0 / np.sqrt(2)
+        self.cfl = cfl
 
-        self.M = self.NumConservedVar * self.Nxi * self.Neta
+        self.M = self.Nxi * self.Neta
 
         # Order of accuracy for the derivative matrices of the first and second order
-        self.__firstderivativeOrder = "5thOrder"
+        self.firstderivativeOrder = "5thOrder"
 
         # Dimensional constants used in the model
-        self.k = 0.2136
-        self.gamma_s = 0.1625
-        self.v_x = 0.2 * np.ones(self.Nt)
+        self.v_x = 0.4 * np.ones(self.Nt)
         self.v_y = np.zeros(self.Nt)
-        self.alpha = 187.93
-        self.gamma = 4.8372e-5
-        self.mu = 558.49
-        self.T_a = 300
-        self.speedofsoundsquare = 1
+        self.C = 0.4
 
         # Sparse matrices of the first and second order
-        self.Mat_primal = None
-        self.Mat_adjoint = None
-
-        # Reference variables
-        self.T_ref = self.mu
-        self.S_ref = 1
-        self.x_ref = np.sqrt(self.k * self.mu) / np.sqrt(self.alpha)
-        self.y_ref = np.sqrt(self.k * self.mu) / np.sqrt(self.alpha)
-        self.t_ref = self.mu / self.alpha
-        self.v_x_ref = self.x_ref / self.t_ref
-        self.v_y_ref = self.y_ref / self.t_ref
+        self.Mat = None
 
     def Grid(self):
-        self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi / self.x_ref
+        self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
         self.dx = self.X[1] - self.X[0]
 
         if self.Neta == 1:
-            self.Y = np.asarray([1])
-            self.dy = 1
-
-            dt = self.dx * self.cfl / np.sqrt(self.speedofsoundsquare)
+            self.Y = 0
+            self.dy = 0
         else:
-            self.Y = np.arange(1, self.Neta + 1) * self.Leta / self.Neta / self.y_ref
+            self.Y = np.arange(1, self.Neta + 1) * self.Leta / self.Neta
             self.dy = self.Y[1] - self.Y[0]
 
-            dt = (np.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / np.sqrt(self.speedofsoundsquare)
-
-            self.X_2D, self.Y_2D = np.meshgrid(self.X, self.Y)
-            self.X_2D = np.transpose(self.X_2D)
-            self.Y_2D = np.transpose(self.Y_2D)
-
-        t = dt * np.arange(self.Nt)
-        self.t = t / self.t_ref
+        dt = (np.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / self.C
+        self.t = dt * np.arange(self.Nt)
         self.dt = self.t[1] - self.t[0]
 
+        self.X_2D, self.Y_2D = np.meshgrid(self.X, self.Y)
+        self.X_2D = np.transpose(self.X_2D)
+        self.Y_2D = np.transpose(self.Y_2D)
+
+        print('dt = ', dt)
+        print('Final time : ', self.t[-1])
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            T = 1200 * np.exp(-((self.X - self.Lxi / (2 * self.x_ref)) ** 2) / 200) / self.T_ref
-            S = np.ones_like(T) / self.S_ref
-        else:
-            T = 1200 * np.exp(-(((self.X_2D - self.Lxi / (2 * self.x_ref)) ** 2) / 200 +
-                                ((self.Y_2D - self.Leta / (2 * self.y_ref)) ** 2) / 200)) / self.T_ref
-            S = np.ones_like(T) / self.S_ref
+            q = np.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
 
         # Arrange the values of T and S in 'q'
-        T = np.reshape(T, newshape=self.NN, order="F")
-        S = np.reshape(S, newshape=self.NN, order="F")
-        q = np.array(np.concatenate((T, S)))
-
-        # Non-dimensionalize the velocities
-        self.v_x = self.v_x / self.v_x_ref
-        self.v_y = self.v_y / self.v_y_ref
+        q = np.reshape(q, newshape=self.NN, order="F")
 
         return q
 
     def RHS_primal(self, q, f, sigma):
 
-        # Forcing term
-        f_T = f[:self.NN]
-        f_S = f[self.NN:]
-
-        # Masking
-        m_T = sigma[:self.NN]
-        m_S = sigma[self.NN:]
-
-        T = q[:self.NN]
-        S = q[self.NN:]
-
-        # This array is a masking array that becomes 1 if the T is greater than 0 and 0 if not. It activates
-        # the arrhenius term
-        arrhenius_activate = np.where(T > 0, 1, 0)
-
-        # This parameter is for preventing division by 0
-        epsilon = 1e-8
-
-        # Coefficients for the terms in the equation
-        Coeff_diff = 1.0
-
         Coeff_conv_x = self.v_x[0]
         Coeff_conv_y = self.v_y[0]
 
-        Coeff_react_1 = 1.0
-        Coeff_react_2 = self.gamma * self.mu
-        Coeff_react_3 = (self.mu * self.gamma_s / self.alpha)
-
         DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
-        Tdot = Coeff_diff * self.Mat_primal.Laplace.dot(T) - DT.dot(T) - Coeff_react_2 * T + \
-               Coeff_react_1 * arrhenius_activate * S * np.exp(-1.0 / (np.maximum(T, epsilon))) + m_T * f_T
-        Sdot = - Coeff_react_3 * arrhenius_activate * S * np.exp(-1.0 / (np.maximum(T, epsilon))) + m_S * f_S
-
-        qdot = np.array(np.concatenate((Tdot, Sdot)))
+        qdot = - DT.dot(q) + sigma * f
 
         return qdot
 
     def TimeIntegration_primal(self, q, f0=None, sigma=None, ti_method="bdf4"):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
-        self.Mat_primal = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
+        self.Mat_primal = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
                                             Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Time loop
         if ti_method == "rk4":
-            qs = np.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
+            qs = np.zeros((self.Nxi * self.Neta, self.Nt))
             for n in range(self.Nt):
                 q = self.rk4(self.RHS_primal, q, self.dt, f0[:, n], sigma[:, n])
                 qs[:, n] = q
@@ -176,84 +118,40 @@ class Wildfire:
 
     def InitialConditions_adjoint(self):
         if self.Neta == 1:
-            T_adj = np.zeros_like(self.X) / self.T_ref
-            S_adj = np.zeros_like(T_adj) / self.S_ref
-        else:
-            T_adj = np.zeros_like(self.X_2D) / self.T_ref
-            S_adj = np.zeros_like(T_adj) / self.S_ref
-
+            q_adj = np.zeros_like(self.X)
 
         # Arrange the values of T_adj and S_adj in 'q_adj'
-        T_adj = np.reshape(T_adj, newshape=self.NN, order="F")
-        S_adj = np.reshape(S_adj, newshape=self.NN, order="F")
-        q_adj = np.array(np.concatenate((T_adj, S_adj)))
+        q_adj = np.reshape(q_adj, newshape=self.NN, order="F")
 
         return q_adj
 
-    def RHS_adjoint(self, q_adj, f, TS, TS_tar, T_var, S_var):
-
-        T_adj = q_adj[:self.NN]
-        S_adj = q_adj[self.NN:]
-
-        T = TS[:self.NN]
-        S = TS[self.NN:]
-
-        T_tar = TS_tar[:self.NN]
-        S_tar = TS_tar[self.NN:]
-
-        # This array is a masking array that becomes 1 if the T is greater than 0 and 0 if not. It activates
-        # the arrhenius term
-        arrhenius_activate = np.where(T > 0, 1, 0)
-        # This parameter is for preventing division by 0
-        epsilon = 1e-8
-
-        # Control parameters
-        cp_1 = self.gamma * self.mu
-        cp_2 = self.mu * self.gamma_s / self.alpha
+    def RHS_adjoint(self, q_adj, f, q, q_tar):
 
         DT = self.v_x[0] * self.Mat_adjoint.Grad_Xi_kron + self.v_y[0] * self.Mat_adjoint.Grad_Eta_kron
-        T_adj_dot = - self.Mat_adjoint.Laplace.dot(T_adj) - DT.dot(T_adj) - arrhenius_activate * \
-                     (S * np.exp(-1 / (np.maximum(T, epsilon))) * (1 / (np.maximum(T, epsilon)) ** 2) *
-                      T_adj + np.exp(-1 / (np.maximum(T, epsilon))) * S_adj) + cp_1 * T_adj - T_var * (T - T_tar)
-        S_adj_dot = arrhenius_activate * (cp_2 * S * np.exp(-1 / (np.maximum(T, epsilon))) *
-                                          (1 / (np.maximum(T, epsilon)) ** 2) * T_adj +
-                                          cp_2 * np.exp(-1 / (np.maximum(T, epsilon))) * S_adj) - S_var * (S - S_tar)
-
-        q_adj_dot = np.array(np.concatenate((T_adj_dot, S_adj_dot)))
+        q_adj_dot = - DT.dot(q_adj) - (q - q_tar)
 
         return q_adj_dot
 
     def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="bdf4", dict_args=None):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
-        self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.__firstderivativeOrder, Nxi=self.Nxi,
+        self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
                                              Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            qs_adj = np.zeros((self.NumConservedVar * self.Nxi * self.Neta, self.Nt))
+            qs_adj = np.zeros((self.Nxi * self.Neta, self.Nt))
             qs_adj[:, -1] = q0_adj
             for n in range(1, self.Nt):
                 q = self.rk4(self.RHS_adjoint, qs_adj[:, -n], -self.dt, f0[:, -(n + 1)],
-                             qs[:, -(n + 1)], qs_target[:, -(n + 1)], dict_args['T_var'],
-                             dict_args['S_var'])
+                             qs[:, -(n + 1)], qs_target[:, -(n + 1)])
                 qs_adj[:, -(n + 1)] = q
 
             return qs_adj
         elif ti_method == "bdf4":
             pass
 
-    def ReDim_grid(self):
-        self.X = self.X * self.x_ref
-        self.Y = self.Y * self.y_ref
-        self.t = self.t * self.t_ref
-
-    def ReDim_qs(self, qs):
-        qs[:self.NN, :] = qs[:self.NN, :] * self.T_ref
-        qs[self.NN:, :] = qs[self.NN:, :] * self.S_ref
-
-        return qs
 
     @staticmethod
     def rk4(RHS: callable,

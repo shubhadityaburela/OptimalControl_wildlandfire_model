@@ -74,28 +74,15 @@ class PlotFlow:
     def plot1D(self, Q, name, immpath):
         os.makedirs(immpath, exist_ok=True)
 
-        T = Q[:self.Nx, :]
-        S = Q[self.Nx:, :]
-
         # Plot the snapshot matrix for conserved variables for original model
         fig = plt.figure(figsize=(10, 5))
         ax1 = fig.add_subplot(121)
-        im1 = ax1.pcolormesh(self.X_1D_grid, self.t_grid, T, cmap='YlOrRd')  # , vmin=0, vmax=jnp.max(T))
+        im1 = ax1.pcolormesh(self.X_1D_grid, self.t_grid, Q, cmap='YlOrRd')
         ax1.axis('off')
-        # ax1.axis('scaled')
-        ax1.set_title(r"$T(x, t)$")
+        ax1.set_title(r"$q(x, t)$")
         divider = make_axes_locatable(ax1)
         cax = divider.append_axes('right', size='10%', pad=0.08)
         fig.colorbar(im1, cax=cax, orientation='vertical')
-
-        ax2 = fig.add_subplot(122)
-        im2 = ax2.pcolormesh(self.X_1D_grid, self.t_grid, S, cmap='YlGn')
-        ax2.axis('off')
-        # ax2.axis('scaled')
-        ax2.set_title(r"$S(x, t)$")
-        divider = make_axes_locatable(ax2)
-        cax = divider.append_axes('right', size='10%', pad=0.08)
-        fig.colorbar(im2, cax=cax, orientation='vertical')
 
         fig.supylabel(r"time $t$")
         fig.supxlabel(r"space $x$")
