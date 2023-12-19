@@ -1,6 +1,6 @@
 from Wildfire import Wildfire
 from Plots import PlotFlow
-from Helper import Calc_Cost, Update_Control, Force_masking, Calc_target_val
+from Helper import Calc_Cost, Update_Control, Force_masking, Calc_target_val, ControlSelectionMatrix_advection
 import numpy as np
 import sys
 import os
@@ -11,7 +11,7 @@ import jax.numpy as jnp
 config.update("jax_debug_nans", True)
 jax.config.update("jax_enable_x64", True)
 
-np.set_printoptions(threshold=sys.maxsize, linewidth=300)
+jnp.set_printoptions(threshold=sys.maxsize, linewidth=300)
 
 import matplotlib.pyplot as plt
 
@@ -19,12 +19,12 @@ import matplotlib.pyplot as plt
 Dimension = "1D"
 Nxi = 200
 Neta = 1
-Nt = 500
+Nt = 400
 
 # Wildfire solver initialization along with grid initialization
 wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3)
 wf.Grid()
-tm = "rk4"  # Time stepping method
+tm = "implicit_midpoint"  # Time stepping method
 kwargs = {
     'dx': wf.dx,
     'dy': wf.dy,
@@ -34,26 +34,36 @@ kwargs = {
     'Nt': wf.Nt,
 }
 
-# Solve for sigma and the target values
-impath = "./data/"
+
+#%%
+choose_selected_control = True
+# Using fewer controls
+n_c = 20  # Number of controls
+f_tilde = jnp.zeros((n_c, wf.Nt))
+
+# Selection matrix for the control input
+wf.psi = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0)
+
+
+#%% Solve for sigma
+impath = "./data/FOM/"
 os.makedirs(impath, exist_ok=True)
-f_ = np.zeros((wf.Nxi * wf.Neta, wf.Nt))
-s_ = np.zeros_like(f_)
-qs = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_, s_, ti_method="rk4")
-sigma = Force_masking(qs, wf.X, wf.Y, wf.t, dim=Dimension)
-np.save(impath + 'sigma.npy', sigma)
-np.save(impath + 'qs_org.npy', qs)
-sigma = np.load(impath + 'sigma.npy')
+qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
+sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
+jnp.save(impath + 'sigma.npy', sigma)
+jnp.save(impath + 'qs_org.npy', qs_org)
+sigma = jnp.load(impath + 'sigma.npy')
 
 
-# Optimal control
-max_opt_steps = 50
+#%% Optimal control
+max_opt_steps = 5
 verbose = True
-lamda = {'q_reg': 1e-1}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
+lamda = {'q_reg': 1e-2}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
-f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
-qs_target = Calc_target_val(qs, wf, kind='zero', **kwargs)  # Target value for the optimization step
+f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
+qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
+jnp.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
 
@@ -63,6 +73,10 @@ q0_adj = wf.InitialConditions_adjoint()
 
 
 #%%
+# If we choose selected controls then we just switch
+if choose_selected_control:
+    f = f_tilde
+#%%
 for opt_step in range(max_opt_steps):
     '''
     Forward calculation
@@ -70,7 +84,7 @@ for opt_step in range(max_opt_steps):
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
     time_odeint = perf_counter()  # save timing
-    qs = wf.TimeIntegration_primal(q0, f, sigma, ti_method=tm)
+    qs = wf.TimeIntegration_primal(q0, f, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
@@ -95,12 +109,14 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
+
     '''
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du = Update_Control(f, omega, lamda, sigma, q0, qs_adj, qs_target, J,
-                                     max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, **kwargs)
+    f, J_opt, dL_du = Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J,
+                                     max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm,
+                                     choose_selected_control=choose_selected_control, **kwargs)
     dL_du_list.append(dL_du)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
@@ -125,27 +141,29 @@ for opt_step in range(max_opt_steps):
         break
 
 # Final state corresponding to the optimal control f
-qs = wf.TimeIntegration_primal(q0, f, sigma, ti_method=tm)
+qs_opt = wf.TimeIntegration_primal(q0, f, ti_method=tm)
+f_opt = wf.psi @ f
 
 #%%
 # Save the optimized solution
-np.save(impath + 'qs_opt.npy', qs)
-np.save(impath + 'qs_adj_opt.npy', qs_adj)
-np.save(impath + 'f_opt.npy', f)
+jnp.save(impath + 'qs_opt.npy', qs_opt)
+jnp.save(impath + 'qs_adj_opt.npy', qs_adj)
+jnp.save(impath + 'f_opt.npy', f_opt)
 
 
 #%%
 # Load the results
-qs_org = np.load(impath + 'qs_org.npy')
-qs_opt = np.load(impath + 'qs_opt.npy')
-qs_adj_opt = np.load(impath + 'qs_adj_opt.npy')
-f_opt = np.load(impath + 'f_opt.npy')
+qs_org = jnp.load(impath + 'qs_org.npy')
+qs_opt = jnp.load(impath + 'qs_opt.npy')
+qs_adj_opt = jnp.load(impath + 'qs_adj_opt.npy')
+f_opt = jnp.load(impath + 'f_opt.npy')
 
 
 # Plot the results
 pf = PlotFlow(wf.X, wf.Y, wf.t)
 if Dimension == "1D":
     pf.plot1D(qs_org, name="qs_org", immpath="./plots/FOM_1D/")
+    pf.plot1D(qs_target, name="qs_target", immpath="./plots/FOM_1D/")
     pf.plot1D(qs_opt, name="qs_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/FOM_1D/")

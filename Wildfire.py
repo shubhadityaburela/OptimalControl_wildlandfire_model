@@ -17,11 +17,15 @@ import numpy as np
 import math
 
 
+from rk4 import rk4
+from bdf4 import bdf4
+from bdf4_updated import bdf4_updated
+from implicit_midpoint import implicit_midpoint
+
+
 class Wildfire:
     def __init__(self, Nxi: int, Neta: int, timesteps: int, cfl: float) -> None:
         # Assertion statements for checking the sanctity of the input variables
-        self.Mat_adjoint = None
-        self.Mat_primal = None
         assert Nxi > 0, f"Please input sensible values for the X grid points"
         assert Neta > 0, f"Please input sensible values for the Y grid points"
         assert timesteps >= 0, f"Please input sensible values for time steps"
@@ -50,56 +54,65 @@ class Wildfire:
         # Order of accuracy for the derivative matrices of the first and second order
         self.firstderivativeOrder = "5thOrder"
 
-        # Dimensional constants used in the model
-        self.v_x = 0.4 * np.ones(self.Nt)
-        self.v_y = np.zeros(self.Nt)
+        self.v_x = 0.4 * jnp.ones(self.Nt)
+        self.v_y = jnp.zeros(self.Nt)
         self.C = 0.4
+
+        self.v_x_target = self.v_x
+        self.v_y_target = self.v_y
+        self.v_x_target = self.v_x_target.at[3*self.Nt//4:].set(0.9)
 
         # Sparse matrices of the first and second order
         self.Mat = None
+        self.Mat_adjoint = None
+        self.Mat_primal = None
+
+
+        # Offline matrices that are pre-computed
+        self.psi = None
+        self.VT_psi = None
+        self.A_conv = None
+        self.A_conv_adj = None
+
 
     def Grid(self):
-        self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
+        self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
         self.dx = self.X[1] - self.X[0]
 
         if self.Neta == 1:
             self.Y = 0
             self.dy = 0
         else:
-            self.Y = np.arange(1, self.Neta + 1) * self.Leta / self.Neta
+            self.Y = jnp.arange(1, self.Neta + 1) * self.Leta / self.Neta
             self.dy = self.Y[1] - self.Y[0]
 
-        dt = (np.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / self.C
-        self.t = dt * np.arange(self.Nt)
+        dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / self.C
+        self.t = dt * jnp.arange(self.Nt)
         self.dt = self.t[1] - self.t[0]
-
-        self.X_2D, self.Y_2D = np.meshgrid(self.X, self.Y)
-        self.X_2D = np.transpose(self.X_2D)
-        self.Y_2D = np.transpose(self.Y_2D)
 
         print('dt = ', dt)
         print('Final time : ', self.t[-1])
 
+
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            q = np.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
+            q = jnp.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
 
-        # Arrange the values of T and S in 'q'
-        q = np.reshape(q, newshape=self.NN, order="F")
+        q = jnp.reshape(q, newshape=self.NN, order="F")
 
         return q
 
-    def RHS_primal(self, q, f, sigma):
+    def RHS_primal(self, q, f):
 
         Coeff_conv_x = self.v_x[0]
         Coeff_conv_y = self.v_y[0]
 
         DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
-        qdot = - DT.dot(q) + sigma * f
+        qdot = - DT.dot(q) + self.psi @ f
 
         return qdot
 
-    def TimeIntegration_primal(self, q, f0=None, sigma=None, ti_method="bdf4"):
+    def TimeIntegration_primal(self, q, f0=None, sigma=None, psi=None, ti_method="rk4"):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
         self.Mat_primal = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
@@ -107,32 +120,145 @@ class Wildfire:
 
         # Time loop
         if ti_method == "rk4":
-            qs = np.zeros((self.Nxi * self.Neta, self.Nt))
-            for n in range(self.Nt):
-                q = self.rk4(self.RHS_primal, q, self.dt, f0[:, n], sigma[:, n])
-                qs[:, n] = q
+            # Time loop
+            qs = jnp.zeros((self.Nxi * self.Neta, self.Nt))
+            qs = qs.at[:, 0].set(q)
 
-            return qs
+            @jax.jit
+            def body(n, qs_):
+                # Main Runge-Kutta 4 solver step
+                h = rk4(self.RHS_primal, qs_[:, n - 1], f0[:, n], self.dt)
+                return qs_.at[:, n].set(h)
+
+            return jax.lax.fori_loop(1, self.Nt, body, qs)
+
         elif ti_method == "bdf4":
-            pass
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal(x, u)
+
+            return bdf4(f=body, tt=self.t, x0=q, uu=f0.T).T
+
+        elif ti_method == "bdf4_updated":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal(x, u)
+
+            return bdf4_updated(f=body, tt=self.t, x0=q, uu=f0.T).T
+
+        elif ti_method == "implicit_midpoint":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal(x, u)
+
+            return implicit_midpoint(f=body, tt=self.t, x0=q, uu=f0.T).T
+
+
+    def RHS_primal_target(self, q, f, v_x, v_y):
+
+        DT = v_x * self.Mat_primal.Grad_Xi_kron + v_y * self.Mat_primal.Grad_Eta_kron
+        qdot = - DT.dot(q)
+
+        return qdot
+
+    def TimeIntegration_primal_target(self, q, f0=None, sigma=None, psi=None, ti_method="rk4"):
+        # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
+        # as they are of more general use for a wide variety of problems
+        self.Mat_primal = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
+                                            Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
+
+        # Time loop
+        qs = jnp.zeros((self.Nxi * self.Neta, self.Nt))
+        qs = qs.at[:, 0].set(q)
+
+        @jax.jit
+        def body(n, qs_):
+            # Main Runge-Kutta 4 solver step
+            h = rk4(self.RHS_primal_target, qs_[:, n - 1], f0[:, n], self.dt, self.v_x_target[n],
+                    self.v_y_target[n - 1])
+            return qs_.at[:, n].set(h)
+
+        return jax.lax.fori_loop(1, self.Nt, body, qs)
+
+
+
+    def InitialConditions_primal_PODG(self, V, q0):
+
+        return V.transpose() @ q0
+
+    def RHS_primal_PODG(self, a, f):
+
+        return self.A_conv @ a + self.VT_psi @ f
+
+    def TimeIntegration_primal_PODG(self, a, f0, ti_method="rk4"):
+        # Time loop
+        if ti_method == "rk4":
+            # Time loop
+            as_ = jnp.zeros((a.shape[0], self.Nt))
+            as_ = as_.at[:, 0].set(a)
+
+            @jax.jit
+            def body(n, as__):
+                # Main Runge-Kutta 4 solver step
+                h = rk4(self.RHS_primal_PODG, as__[:, n - 1], f0[:, n], self.dt)
+                return as__.at[:, n].set(h)
+
+            return jax.lax.fori_loop(1, self.Nt, body, as_)
+
+        elif ti_method == "bdf4":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal_PODG(x, u)
+
+            return bdf4(f=body, tt=self.t, x0=a, uu=f0.T).T
+
+        elif ti_method == "bdf4_updated":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal_PODG(x, u)
+
+            return bdf4_updated(f=body, tt=self.t, x0=a, uu=f0.T).T
+
+        elif ti_method == "implicit_midpoint":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal_PODG(x, u)
+
+            return implicit_midpoint(f=body, tt=self.t, x0=a, uu=f0.T).T
+
+    def POD_Galerkin_mat_primal(self, V):
+        # Construct linear operators
+        Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
+                                Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
+
+        # Convection matrix (Needs to be changed if the velocity is time dependent)
+        C00 = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
+        self.A_conv = (V.transpose() @ C00) @ V
+
+        # Compute the pre factor for the control
+        self.VT_psi = V.transpose() @ self.psi
+
 
     def InitialConditions_adjoint(self):
         if self.Neta == 1:
-            q_adj = np.zeros_like(self.X)
+            q_adj = jnp.zeros_like(self.X)
 
         # Arrange the values of T_adj and S_adj in 'q_adj'
-        q_adj = np.reshape(q_adj, newshape=self.NN, order="F")
+        q_adj = jnp.reshape(q_adj, newshape=self.NN, order="F")
 
         return q_adj
 
     def RHS_adjoint(self, q_adj, f, q, q_tar):
 
-        DT = self.v_x[0] * self.Mat_adjoint.Grad_Xi_kron + self.v_y[0] * self.Mat_adjoint.Grad_Eta_kron
-        q_adj_dot = - DT.dot(q_adj) - (q - q_tar)
+        Coeff_conv_x = self.v_x[0]
+        Coeff_conv_y = self.v_y[0]
+
+        DT = Coeff_conv_x * self.Mat_adjoint.Grad_Xi_kron + Coeff_conv_y * self.Mat_adjoint.Grad_Eta_kron
+        q_adj_dot = DT.transpose().dot(q_adj) - (q - q_tar)
 
         return q_adj_dot
 
-    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="bdf4", dict_args=None):
+    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="rk4", dict_args=None):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
         self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
@@ -141,268 +267,89 @@ class Wildfire:
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            qs_adj = np.zeros((self.Nxi * self.Neta, self.Nt))
-            qs_adj[:, -1] = q0_adj
-            for n in range(1, self.Nt):
-                q = self.rk4(self.RHS_adjoint, qs_adj[:, -n], -self.dt, f0[:, -(n + 1)],
+            qs_adj = jnp.zeros((self.Nxi * self.Neta, self.Nt))
+            qs_adj = qs_adj.at[:, -1].set(q0_adj)
+
+            @jax.jit
+            def body(n, qs_adj_):
+                # Main Runge-Kutta 4 solver step
+                h = rk4(self.RHS_adjoint, qs_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
                              qs[:, -(n + 1)], qs_target[:, -(n + 1)])
-                qs_adj[:, -(n + 1)] = q
+                return qs_adj_.at[:, -(n + 1)].set(h)
 
-            return qs_adj
+            return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
+
         elif ti_method == "bdf4":
-            pass
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint(x_ad, u, *args)
+
+            return bdf4(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
+
+        elif ti_method == "bdf4_updated":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint(x_ad, u, *args)
+
+            return bdf4_updated(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
+
+        elif ti_method == "implicit_midpoint":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint(x_ad, u, *args)
+
+            return implicit_midpoint(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
+                                     type='backward').T
 
 
-    @staticmethod
-    def rk4(RHS: callable,
-            u0: np.ndarray,
-            dt,
-            *args) -> np.ndarray:
+    def InitialConditions_adjoint_PODG(self, V, q0_adj):
 
-        k1 = RHS(u0, *args)
-        k2 = RHS(u0 + dt / 2 * k1, *args)
-        k3 = RHS(u0 + dt / 2 * k2, *args)
-        k4 = RHS(u0 + dt * k3, *args)
+        return V.transpose() @ q0_adj
 
-        u1 = u0 + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
+    def RHS_adjoint_PODG(self, a_adj, f, a, a_target):
 
-        return u1
+        return - (self.A_conv_adj @ a_adj + (a - a_target))
 
-    @staticmethod
-    def bdf4(f: callable,
-             tt: jnp.ndarray,
-             x0: jnp.ndarray,
-             uu: jnp.ndarray,
-             func_args=(),
-             dict_args=None,
-             type='forward',
-             debug=False,
-             ) -> jnp.ndarray:
+    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, as_target, ti_method="rk4"):
+        # Time loop
+        if ti_method == "rk4":
+            # Time loop
+            as_adj = jnp.zeros((at_adj.shape[0], self.Nt))
+            as_adj = as_adj.at[:, -1].set(at_adj)
 
-        if dict_args is None:
-            dict_args = {}
+            @jax.jit
+            def body(n, as_adj_):
+                # Main Runge-Kutta 4 solver step
+                h = rk4(self.RHS_adjoint_PODG, as_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
+                        as_[:, -(n + 1)], as_target[:, -(n + 1)])
+                return as_adj_.at[:, -(n + 1)].set(h)
 
-        from Helper import newton
+            return jax.lax.fori_loop(1, self.Nt, body, as_adj)
 
-        """
-        uses bdf4 method to solve the initial value problem
+        elif ti_method == "bdf4":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-        x' = f(x,u), x(tt[0]) = x0    (if type == 'forward')
+            return bdf4(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,), type='backward').T
 
-        or
+        elif ti_method == "bdf4_updated":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-        p' = -f(p,u), p(tt[-1]) = p0   (if type == 'backward')
+            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,), type='backward').T
 
-        :param f: right hand side of ode, f = f(x,u)
-        :param tt: timepoints
-        :param x0: initial or final value
-        :param uu: control input at timepoints
-        :param type: 'forward' or 'backward'
-        :param debug: if True, print debug information
-        :return: solution of the problem in the form
-            x[i,:] = x(tt[i])
-            p[i,:] = p(tt[i])
-        """
+        elif ti_method == "implicit_midpoint":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-        N = len(x0)  # system dimension
-        nt = len(tt)  # number of timepoints
-        dt = tt[1] - tt[0]  # timestep
+            return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,),
+                                     type='backward').T
 
-        def m_bdf(xj, xj1, xj2, xj3, xj4, uj, *args, **kwargs):
-            return \
-                    25 * xj \
-                    - 48 * xj1 \
-                    + 36 * xj2 \
-                    - 16 * xj3 \
-                    + 3 * xj4 \
-                    - 12 * dt * f(xj, uj, *args, **kwargs)
 
-        def m_bdf_rev(xj, xj1, xj2, xj3, xj4, uj, *args, **kwargs):
-            return \
-                    25 * xj \
-                    - 48 * xj1 \
-                    + 36 * xj2 \
-                    - 16 * xj3 \
-                    + 3 * xj4 \
-                    + 12 * dt * f(xj, uj, *args, **kwargs)
+    def POD_Galerkin_mat_adjoint(self):
+        self.A_conv_adj = self.A_conv.transpose()
 
-        def m_mid(xj, xjm1, ujm1, *args, **kwargs):
-            # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
-            return xj - xjm1 - dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args, **kwargs)  # for finer implicit midpoint
 
-        def m_mid_rev(xj, xjm1, ujm1, *args, **kwargs):
-            # return xj - xjm1 - dt * f( 1/2 *  (xjm1 + xj), ujm1 )
-            return xj - xjm1 + dt / 2 * f(1 / 2 * (xjm1 + xj), ujm1, *args, **kwargs)  # for finer implicit midpoint
-
-        solver_mid = newton(m_mid)
-
-        solver_mid_rev = newton(m_mid_rev)
-
-        solver_bdf = newton(m_bdf)
-
-        solver_bdf_rev = newton(m_bdf_rev)
-
-        if type == 'forward':
-
-            x = jnp.zeros((nt, N))
-            x = x.at[0, :].set(x0)
-            xaux = jnp.zeros((7, N))
-            xaux = xaux.at[0, :].set(x0)
-
-            # first few steps with finer implicit midpoint
-            for jsmall in range(1, 7):
-
-                xauxm1 = xaux[jsmall - 1, :]
-                if jsmall == 1 or jsmall == 2:
-                    uauxm1 = uu[0, :]
-                elif jsmall == 3 or jsmall == 4:
-                    uauxm1 = uu[1, :]
-                else:  # jsmall == 5 or jsmall == 6:
-                    uauxm1 = uu[2, :]
-                xaux = xaux.at[jsmall, :].set(
-                    solver_mid(xauxm1, xauxm1, uauxm1, *tuple(ai[jsmall] for ai in func_args),
-                               **{key: value[jsmall] for key, value in dict_args.items()}))
-
-            # put values in x
-            for j in range(1, 4):
-
-                if j == 1:
-                    x = x.at[j, :].set(xaux[2, :])
-                elif j == 2:
-                    x = x.at[j, :].set(xaux[4, :])
-                else:  # j == 3
-                    x = x.at[j, :].set(xaux[6, :])
-
-                # xjm1 = x[j-1,:]
-                # tjm1 = tt[j-1]
-                # ujm1 = uu[j-1,:] # here u is assumed to be constant in [tjm1, tj]
-                # # ujm1 = 1/2 * (uu[:,j-1] + uu[:,j]) # here u is approximated piecewise linearly
-                #
-                # x = x.at[j,:].set( solver_mid( xjm1, xjm1, ujm1) )
-                #
-                # # jax.debug.print('\n forward midpoint: j = {x}', x = j)
-                #
-                # # if j == 1:
-                # #     jax.debug.print('\nat j = 1, midpoint, forward: ||residual|| = {x}', x = jnp.linalg.norm(m_mid(x[j,:],xjm1,ujm1)) )
-
-            # after that bdf method
-            def body(j, var):
-                x, uu, args, dict_vals = var
-
-                xjm4 = x[j - 4, :]
-                xjm3 = x[j - 3, :]
-                xjm2 = x[j - 2, :]
-                xjm1 = x[j - 1, :]
-                uj = uu[j, :]
-                aij = tuple(ai[j] for ai in args)
-                y = solver_bdf(xjm1, xjm1, xjm2, xjm3, xjm4, uj, *aij,
-                               **{key: val[j] for key, val in zip(dict_args.keys(), dict_vals)})
-                x = x.at[j, :].set(y)
-
-                # jax.debug.print('\n forward bdf: j = {x}', x = j)
-
-                # jax.debug.print('||residual|| = {x}', x = jnp.linalg.norm(m_bdf(y,xjm1,xjm2,xjm3,xjm4,uj)) )
-
-                return x, uu, args, dict_vals
-
-            x, _, _, _ = jax.lax.fori_loop(4, nt, body, (x, uu, func_args, tuple(dict_args.values())), )
-
-            # jax.debug.print('\n forward solution: j = {x}', x=x)
-            if jnp.isnan(x).any():
-                jax.debug.print('forward solution went NAN')
-                exit()
-
-            return x
-
-        else:  # type == 'backward'
-
-            # print(dict_args)
-
-            p = jnp.zeros((nt, N))
-            p = p.at[-1, :].set(x0)
-
-            # first few steps with finer implicit midpoint
-            paux = jnp.zeros((7, N))
-            paux = paux.at[-1, :].set(x0)
-
-            for jsmall in range(1, 7):
-
-                pauxp1 = paux[-jsmall, :]
-                if jsmall == 1 or jsmall == 2:
-                    uauxp1 = uu[-1, :]
-                elif jsmall == 3 or jsmall == 4:
-                    uauxp1 = uu[-2, :]
-                else:  # jsmall == 5 or jsmall == 6:
-                    uauxp1 = uu[-3, :]
-
-                # jax.debug.print('jsmall = {x}', x = jsmall)
-                # jax.debug.print('writing at {x}', x = -jsmall-1)
-
-                paux = paux.at[-jsmall - 1, :].set(
-                    solver_mid_rev(
-                        pauxp1, pauxp1, 0,
-                        *tuple(ai[-jsmall - 1] for ai in func_args),
-                        **{key: value[-jsmall - 1] for key, value in dict_args.items()},
-                    )
-                )
-
-            # jax.debug.print('paux = {x}', x = paux)
-
-            # put values in p
-            for j in reversed(range(nt - 4, nt - 1)):
-
-                if j == nt - 2:
-                    p = p.at[j, :].set(paux[4, :])
-                elif j == nt - 3:
-                    p = p.at[j, :].set(paux[2, :])
-                else:  # j == nt-4:
-                    p = p.at[j, :].set(paux[0, :])
-
-                # jax.debug.print('j = {x}', x = j)
-
-                # pjp1 = p[j+1,:]
-                # tjp1 = tt[j+1]
-                # ujp1 = uu[j+1,:] # here u is assumed to be constant in [tj, tjp1]
-                # # ujp1 = 1/2 * (uu[:,j] + uu[:,j+1]) # here u is approximated piecewise linearly
-                #
-                # p = p.at[j,:].set(solver_mid( pjp1,pjp1, ujp1 ))
-                #
-                # jax.debug.print('\n backward midpoint: j = {x}', x = j)
-                # # if j == nt-1:
-                # #     jax.debug.print('\nat j = 1, midpoint, backward: ||residual|| = {x}', x = jnp.linalg.norm(m_mid(p[j,:],pjp1,ujp1)) )
-
-            # jax.debug.print('\np = {x}\n', x = p)
-
-            # after that bdf method
-
-            def body(tup):
-                j, p, uu, args, dict_vals = tup
-
-                pjp4 = p[j + 4, :]
-                pjp3 = p[j + 3, :]
-                pjp2 = p[j + 2, :]
-                pjp1 = p[j + 1, :]
-                uj = uu[j + 1, :]
-                aij = tuple(ai[j + 1] for ai in args)
-                tj = tt[j + 1]
-
-                y = solver_bdf_rev(pjp1, pjp1, pjp2, pjp3, pjp4, uj, *aij,
-                                   **{key: val[j] for key, val in zip(dict_args.keys(), dict_vals)})
-                p = p.at[j, :].set(y)
-
-                # jax.debug.print('\n backward bdf: j = {x}', x = j)
-
-                # jax.debug.print('j = {x}', x = j)
-                # jax.debug.print('||residual|| = {x}', x = jnp.linalg.norm(m_bdf(y,pjp1,pjp2,pjp3,pjp4,uj)))
-
-                return j - 1, p, uu, args, dict_vals
-
-            def cond(tup):
-                j = tup[0]
-                return jnp.greater(j, -1)
-
-            _, p, _, _, _ = jax.lax.while_loop(cond, body, (nt - 5, p, uu, func_args, tuple(dict_args.values())))
-
-            # jax.debug.print('\np = {x}\n', x = p)
-
-            return p
