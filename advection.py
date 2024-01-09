@@ -23,8 +23,8 @@ from bdf4_updated import bdf4_updated
 from implicit_midpoint import implicit_midpoint
 
 
-class Wildfire:
-    def __init__(self, Nxi: int, Neta: int, timesteps: int, cfl: float) -> None:
+class advection:
+    def __init__(self, Nxi: int, Neta: int, timesteps: int, cfl: float, tilt_from: int) -> None:
         # Assertion statements for checking the sanctity of the input variables
         assert Nxi > 0, f"Please input sensible values for the X grid points"
         assert Neta > 0, f"Please input sensible values for the Y grid points"
@@ -60,7 +60,7 @@ class Wildfire:
 
         self.v_x_target = self.v_x
         self.v_y_target = self.v_y
-        self.v_x_target = self.v_x_target.at[3*self.Nt//4:].set(0.9)
+        self.v_x_target = self.v_x_target.at[tilt_from:].set(0.9)
 
         # Sparse matrices of the first and second order
         self.Mat = None
@@ -69,6 +69,7 @@ class Wildfire:
 
 
         # Offline matrices that are pre-computed
+        self.V = None
         self.psi = None
         self.VT_psi = None
         self.A_conv = None
@@ -182,9 +183,9 @@ class Wildfire:
 
 
 
-    def InitialConditions_primal_PODG(self, V, q0):
+    def InitialConditions_primal_PODG(self, q0):
 
-        return V.transpose() @ q0
+        return self.V.transpose() @ q0
 
     def RHS_primal_PODG(self, a, f):
 
@@ -226,17 +227,17 @@ class Wildfire:
 
             return implicit_midpoint(f=body, tt=self.t, x0=a, uu=f0.T).T
 
-    def POD_Galerkin_mat_primal(self, V):
+    def POD_Galerkin_mat_primal(self):
         # Construct linear operators
         Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
                                 Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Convection matrix (Needs to be changed if the velocity is time dependent)
         C00 = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
-        self.A_conv = (V.transpose() @ C00) @ V
+        self.A_conv = (self.V.transpose() @ C00) @ self.V
 
         # Compute the pre factor for the control
-        self.VT_psi = V.transpose() @ self.psi
+        self.VT_psi = self.V.transpose() @ self.psi
 
 
     def InitialConditions_adjoint(self):
@@ -302,13 +303,13 @@ class Wildfire:
                                      type='backward').T
 
 
-    def InitialConditions_adjoint_PODG(self, V, q0_adj):
+    def InitialConditions_adjoint_PODG(self, q0_adj):
 
-        return V.transpose() @ q0_adj
+        return self.V.transpose() @ q0_adj
 
     def RHS_adjoint_PODG(self, a_adj, f, a, a_target):
 
-        return - (self.A_conv_adj @ a_adj + (a - a_target))
+        return - (self.A_conv_adj @ a_adj + (a - self.V.transpose() @ a_target))
 
     def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, as_target, ti_method="rk4"):
         # Time loop

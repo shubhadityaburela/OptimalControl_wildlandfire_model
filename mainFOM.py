@@ -1,4 +1,4 @@
-from Wildfire import Wildfire
+from advection import advection
 from Plots import PlotFlow
 from Helper import Calc_Cost, Update_Control, Force_masking, Calc_target_val, ControlSelectionMatrix_advection
 import numpy as np
@@ -21,10 +21,10 @@ Nxi = 200
 Neta = 1
 Nt = 400
 
-# Wildfire solver initialization along with grid initialization
-wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3)
+# solver initialization along with grid initialization
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
 wf.Grid()
-tm = "implicit_midpoint"  # Time stepping method
+tm = "rk4"  # Time stepping method
 kwargs = {
     'dx': wf.dx,
     'dy': wf.dy,
@@ -38,12 +38,15 @@ kwargs = {
 #%%
 choose_selected_control = True
 # Using fewer controls
-n_c = 20  # Number of controls
+n_c = 100  # Number of controls
 f_tilde = jnp.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
-wf.psi = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0)
-
+wf.psi, wf.psi_tensor, wf.psiT_tensor = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0,
+                                                                         tilt_from=3*Nt//4)
+wf.psi = jax.numpy.asarray(wf.psi)
+wf.psi_tensor = jax.numpy.asarray(wf.psi_tensor)
+wf.psiT_tensor = jax.numpy.asarray(wf.psiT_tensor)
 
 #%% Solve for sigma
 impath = "./data/FOM/"
@@ -54,12 +57,11 @@ jnp.save(impath + 'sigma.npy', sigma)
 jnp.save(impath + 'qs_org.npy', qs_org)
 sigma = jnp.load(impath + 'sigma.npy')
 
-
 #%% Optimal control
-max_opt_steps = 5
+max_opt_steps = 100
 verbose = True
-lamda = {'q_reg': 1e-2}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1  # initial step size for gradient update
+lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
+omega = 1e-4  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
