@@ -16,15 +16,15 @@ from matplotlib import cm
 import numpy as np
 import math
 
-
 from rk4 import rk4
 from bdf4 import bdf4
 from bdf4_updated import bdf4_updated
 from implicit_midpoint import implicit_midpoint
+from Helper_sPODG import *
 
 
-class Wildfire:
-    def __init__(self, Nxi: int, Neta: int, timesteps: int, cfl: float) -> None:
+class advection:
+    def __init__(self, Nxi: int, Neta: int, timesteps: int, cfl: float, tilt_from: int) -> None:
         # Assertion statements for checking the sanctity of the input variables
         assert Nxi > 0, f"Please input sensible values for the X grid points"
         assert Neta > 0, f"Please input sensible values for the Y grid points"
@@ -60,20 +60,26 @@ class Wildfire:
 
         self.v_x_target = self.v_x
         self.v_y_target = self.v_y
-        self.v_x_target = self.v_x_target.at[3*self.Nt//4:].set(0.9)
+        self.v_x_target = self.v_x_target.at[tilt_from:].set(0.9)
 
         # Sparse matrices of the first and second order
         self.Mat = None
         self.Mat_adjoint = None
         self.Mat_primal = None
 
-
         # Offline matrices that are pre-computed
+        self.V = None
         self.psi = None
         self.VT_psi = None
         self.A_conv = None
         self.A_conv_adj = None
 
+        # Precomputed matrices for sPOD galerkin based optimal control
+        self.Vs = None
+        self.A = None
+        self.delta_s = None
+        self.V_delta = None
+        self.W_delta = None
 
     def Grid(self):
         self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
@@ -92,7 +98,6 @@ class Wildfire:
 
         print('dt = ', dt)
         print('Final time : ', self.t[-1])
-
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
@@ -153,7 +158,6 @@ class Wildfire:
 
             return implicit_midpoint(f=body, tt=self.t, x0=q, uu=f0.T).T
 
-
     def RHS_primal_target(self, q, f, v_x, v_y):
 
         DT = v_x * self.Mat_primal.Grad_Xi_kron + v_y * self.Mat_primal.Grad_Eta_kron
@@ -180,11 +184,9 @@ class Wildfire:
 
         return jax.lax.fori_loop(1, self.Nt, body, qs)
 
+    def InitialConditions_primal_PODG(self, q0):
 
-
-    def InitialConditions_primal_PODG(self, V, q0):
-
-        return V.transpose() @ q0
+        return self.V.transpose() @ q0
 
     def RHS_primal_PODG(self, a, f):
 
@@ -226,18 +228,17 @@ class Wildfire:
 
             return implicit_midpoint(f=body, tt=self.t, x0=a, uu=f0.T).T
 
-    def POD_Galerkin_mat_primal(self, V):
+    def POD_Galerkin_mat_primal(self):
         # Construct linear operators
         Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
                                 Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Convection matrix (Needs to be changed if the velocity is time dependent)
         C00 = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
-        self.A_conv = (V.transpose() @ C00) @ V
+        self.A_conv = (self.V.transpose() @ C00) @ self.V
 
         # Compute the pre factor for the control
-        self.VT_psi = V.transpose() @ self.psi
-
+        self.VT_psi = self.V.transpose() @ self.psi
 
     def InitialConditions_adjoint(self):
         if self.Neta == 1:
@@ -274,7 +275,7 @@ class Wildfire:
             def body(n, qs_adj_):
                 # Main Runge-Kutta 4 solver step
                 h = rk4(self.RHS_adjoint, qs_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
-                             qs[:, -(n + 1)], qs_target[:, -(n + 1)])
+                        qs[:, -(n + 1)], qs_target[:, -(n + 1)])
                 return qs_adj_.at[:, -(n + 1)].set(h)
 
             return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
@@ -291,7 +292,8 @@ class Wildfire:
             def body(x_ad, u, *args):
                 return self.RHS_adjoint(x_ad, u, *args)
 
-            return bdf4_updated(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
+            return bdf4_updated(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
+                                type='backward').T
 
         elif ti_method == "implicit_midpoint":
             @jax.jit
@@ -301,14 +303,13 @@ class Wildfire:
             return implicit_midpoint(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
                                      type='backward').T
 
+    def InitialConditions_adjoint_PODG(self, q0_adj):
 
-    def InitialConditions_adjoint_PODG(self, V, q0_adj):
-
-        return V.transpose() @ q0_adj
+        return self.V.transpose() @ q0_adj
 
     def RHS_adjoint_PODG(self, a_adj, f, a, a_target):
 
-        return - (self.A_conv_adj @ a_adj + (a - a_target))
+        return - (self.A_conv_adj @ a_adj + (a - self.V.transpose() @ a_target))
 
     def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, as_target, ti_method="rk4"):
         # Time loop
@@ -338,7 +339,8 @@ class Wildfire:
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,), type='backward').T
+            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,),
+                                type='backward').T
 
         elif ti_method == "implicit_midpoint":
             @jax.jit
@@ -348,8 +350,125 @@ class Wildfire:
             return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,),
                                      type='backward').T
 
-
     def POD_Galerkin_mat_adjoint(self):
         self.A_conv_adj = self.A_conv.transpose()
+
+    ################################################# Shifted POD functions ############################################
+    def InitialConditions_primal_sPODG(self, q0):
+        a = jnp.linalg.inv(self.Vs.transpose() @ self.Vs) @ (self.Vs.transpose() @ q0)
+        # Initialize the shifts with zero for online phase
+        a = jnp.concatenate((a, jnp.asarray([0])))
+
+        return a
+
+    def sPOD_Galerkin_mat_primal(self, samples):
+        # Construct linear operators
+        Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
+                                Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
+
+        # Convection matrix (Needs to be changed if the velocity is time dependent)
+        self.A = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
+
+        # Generate the shift samples
+        self.delta_s = subsample(self.X, num_sample=samples)
+
+        # Extract transformation operators based on sub-sampled delta
+        T_delta, _ = get_T(self.delta_s, self.X, self.t)
+
+        # Construct V_delta and W_delta matrix
+        self.V_delta, self.W_delta = make_V_W_delta(self.Vs, T_delta, self.X, samples)
+
+        # Construct LHS matrix
+        LHS_matrix = make_LHS_mat_offline_primal(self.V_delta, self.W_delta)
+
+        # Construct RHS matrix
+        RHS_matrix = make_RHS_mat_offline_primal(self.V_delta, self.W_delta, self.A)
+
+        # Construct the control matrix
+        C_matrix = make_control_mat_offline_primal(self.V_delta, self.W_delta, self.psi)
+
+        # Construct the system matrices for the control update step
+        Ct_matrix = make_control_update_mat(self.V_delta, self.W_delta, self.psi)
+
+        return LHS_matrix, RHS_matrix, C_matrix, Ct_matrix
+
+    def RHS_primal_sPODG(self, a, f, lhs, rhs, c):
+
+        # Compute the interpolation weight and the interval in which the shift lies
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(self.delta_s[2], a[-1])
+
+        # Assemble the dynamic matrix D(a)
+        Da = make_Da(a)
+
+        # Prepare the LHS side of the matrix using D(a)
+        M = make_LHS_mat_online_primal(lhs, Da, intervalIdx, weight)
+
+        # Prepare the RHS side of the matrix using D(a)
+        A = make_RHS_mat_online_primal(rhs, Da, intervalIdx, weight)
+
+        # Prepare the online control matrix
+        C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
+
+        return jnp.linalg.inv(M) @ (A @ a + C)
+
+    def TimeIntegration_primal_sPODG(self, lhs, rhs, c, a, f0, ti_method="rk4"):
+        if ti_method == "rk4":
+            # Time loop
+            as_ = jnp.zeros((a.shape[0], self.Nt))
+            as_ = as_.at[:, 0].set(a)
+
+            @jax.jit
+            def body(n, as__):
+                # Main Runge-Kutta 4 solver step
+                h = rk4(self.RHS_primal_sPODG, as__[:, n - 1], f0[:, n], self.dt, lhs, rhs, c)
+                return as__.at[:, n].set(h)
+
+            return jax.lax.fori_loop(1, self.Nt, body, as_)
+
+        elif ti_method == "bdf4":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal_sPODG(x, u, lhs, rhs, c)
+
+            return bdf4(f=body, tt=self.t, x0=a, uu=f0.T).T
+
+        elif ti_method == "bdf4_updated":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal_sPODG(x, u, lhs, rhs, c)
+
+            return bdf4_updated(f=body, tt=self.t, x0=a, uu=f0.T).T
+
+        elif ti_method == "implicit_midpoint":
+            @jax.jit
+            def body(x, u):
+                return self.RHS_primal_sPODG(x, u, lhs, rhs, c)
+
+            return implicit_midpoint(f=body, tt=self.t, x0=a, uu=f0.T).T
+
+
+    def InitialConditions_adjoint_sPODG(self, q0_adj):
+        a = jnp.linalg.inv(self.Vs.transpose() @ self.Vs) @ (self.Vs.transpose() @ q0_adj)
+        # Initialize the shift adjoint with zero for online phase
+        a = jnp.concatenate((a, jnp.asarray([0])))
+
+        return a
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

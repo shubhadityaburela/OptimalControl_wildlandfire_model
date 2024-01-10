@@ -1,4 +1,4 @@
-from Wildfire import Wildfire
+from advection import advection
 from Plots import PlotFlow
 from Helper import Calc_Cost_PODG, Update_Control_ROM, Calc_target_val, \
     compute_red_basis, ControlSelectionMatrix, ControlSelectionMatrix_advection, Force_masking
@@ -24,10 +24,10 @@ Nxi = 200
 Neta = 1
 Nt = 400
 
-# Wildfire solver initialization along with grid initialization
-wf = Wildfire(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3)
+# solver initialization along with grid initialization
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3)
 wf.Grid()
-tm = "implicit_midpoint"  # Time stepping method
+tm = "rk4"  # Time stepping method
 kwargs = {
     'dx': wf.dx,
     'dy': wf.dy,
@@ -44,7 +44,7 @@ n_c = 20  # Number of controls
 f_tilde = jnp.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
-wf.psi = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0)
+wf.psi = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=10)
 
 
 #%% Solve for sigma
@@ -58,10 +58,10 @@ sigma = jnp.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 50
+max_opt_steps = 1000
 verbose = True
-lamda = {'q_reg': 1e-2}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1e-3  # initial step size for gradient update
+lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
+omega = 1e-4  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
@@ -82,21 +82,18 @@ if choose_selected_control:
 # %% ROM variables
 
 # Modes for the ROM
-n_rom = 50
+n_rom = 100   #  THIS IS THE TRICK. IF WE INCREASE THE NUMBER OF MODES HERE THEN WE GET A FULL RECONSTRUCTION OF THE TARGET AS n_rom approaches min(M,N). APART FROM THIS IT DOES NOT MAKE A HUGE DIFFERENCE IF WE REFINE THE BASIS AT ALL THE STEPS.
 kwargs['n_rom'] = n_rom
 
 # Compute the reduced basis of the uncontrolled system
-V = compute_red_basis(qs_org, **kwargs)
+wf.V = compute_red_basis(qs_org, **kwargs)
 
 # Initial condition for dynamical simulation
-a_primal = wf.InitialConditions_primal_PODG(V, q0)
-a_adjoint = wf.InitialConditions_adjoint_PODG(V, q0_adj)
-
-# Target value for the optimization
-as_target = V.transpose() @ qs_target
+a_primal = wf.InitialConditions_primal_PODG(q0)
+a_adjoint = wf.InitialConditions_adjoint_PODG(q0_adj)
 
 # Construct the primal system matrices for the POD-Galerkin approach
-wf.POD_Galerkin_mat_primal(V)
+wf.POD_Galerkin_mat_primal()
 
 # Construct the adjoint system matrices for the POD-Galerkin approach
 wf.POD_Galerkin_mat_adjoint()
@@ -118,7 +115,7 @@ for opt_step in range(max_opt_steps):
     '''
     Objective and costs for control
     '''
-    J = Calc_Cost_PODG(as_, as_target, f, lamda, **kwargs)
+    J = Calc_Cost_PODG(wf.V, as_, qs_target, f, lamda, **kwargs)
     if opt_step == 0:
         pass
     else:
@@ -132,7 +129,7 @@ for opt_step in range(max_opt_steps):
     Adjoint calculation
     '''
     time_odeint = perf_counter()  # save timing
-    as_adj = wf.TimeIntegration_adjoint_PODG(a_adjoint, f, as_, as_target, ti_method=tm)
+    as_adj = wf.TimeIntegration_adjoint_PODG(a_adjoint, f, as_, qs_target, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
@@ -140,7 +137,7 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du = Update_Control_ROM(f, omega, lamda, a_primal, V, as_adj, as_target, J,
+    f, J_opt, dL_du = Update_Control_ROM(f, omega, lamda, a_primal, as_adj, qs_target, J,
                                          max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, red_nl=True,
                                          **kwargs)
     dL_du_list.append(dL_du)
@@ -167,10 +164,19 @@ for opt_step in range(max_opt_steps):
         break
 
 
+    if opt_step % 1 == 0:
+        qs = wf.V @ as_
+        wf.V = compute_red_basis(qs, **kwargs)
+        a_primal = wf.InitialConditions_primal_PODG(q0)
+        wf.POD_Galerkin_mat_primal()
+        wf.POD_Galerkin_mat_adjoint()
+
+
+
 # Compute the final state
 as__ = wf.TimeIntegration_primal_PODG(a_primal, f, ti_method=tm)
-qs = V @ as__
-qs_adj = V @ as_adj
+qs = wf.V @ as__
+qs_adj = wf.V @ as_adj
 f_opt = wf.psi @ f
 
 # %%
