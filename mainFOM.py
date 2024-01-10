@@ -38,7 +38,7 @@ kwargs = {
 #%%
 choose_selected_control = True
 # Using fewer controls
-n_c = 100  # Number of controls
+n_c = 200  # Number of controls
 f_tilde = jnp.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
@@ -58,10 +58,10 @@ jnp.save(impath + 'qs_org.npy', qs_org)
 sigma = jnp.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 100
+max_opt_steps = 500
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1e-4  # initial step size for gradient update
+omega = 1e-3  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)

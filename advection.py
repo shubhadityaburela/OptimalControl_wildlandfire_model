@@ -16,7 +16,6 @@ from matplotlib import cm
 import numpy as np
 import math
 
-
 from rk4 import rk4
 from bdf4 import bdf4
 from bdf4_updated import bdf4_updated
@@ -67,14 +66,15 @@ class advection:
         self.Mat_adjoint = None
         self.Mat_primal = None
 
-
-        # Offline matrices that are pre-computed
-        self.V = None
+        # Offline matrices that are pre-computed for PODG
+        self.C00 = None
+        self.V_primal = None
+        self.V_adjoint = None
         self.psi = None
-        self.VT_psi = None
+        self.VT_primal_psi = None
+        self.VT_adjoint_psi = None
         self.A_conv = None
         self.A_conv_adj = None
-
 
     def Grid(self):
         self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
@@ -93,7 +93,6 @@ class advection:
 
         print('dt = ', dt)
         print('Final time : ', self.t[-1])
-
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
@@ -154,6 +153,69 @@ class advection:
 
             return implicit_midpoint(f=body, tt=self.t, x0=q, uu=f0.T).T
 
+    def InitialConditions_adjoint(self):
+        if self.Neta == 1:
+            q_adj = jnp.zeros_like(self.X)
+
+        # Arrange the values of T_adj and S_adj in 'q_adj'
+        q_adj = jnp.reshape(q_adj, newshape=self.NN, order="F")
+
+        return q_adj
+
+    def RHS_adjoint(self, q_adj, f, q, q_tar):
+
+        Coeff_conv_x = self.v_x[0]
+        Coeff_conv_y = self.v_y[0]
+
+        DT = Coeff_conv_x * self.Mat_adjoint.Grad_Xi_kron + Coeff_conv_y * self.Mat_adjoint.Grad_Eta_kron
+        q_adj_dot = DT.transpose().dot(q_adj) - (q - q_tar)
+
+        return q_adj_dot
+
+    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="rk4", dict_args=None):
+        # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
+        # as they are of more general use for a wide variety of problems
+        self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
+                                             Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
+
+        # Time loop
+        if ti_method == "rk4":
+            # Time loop
+            qs_adj = jnp.zeros((self.Nxi * self.Neta, self.Nt))
+            qs_adj = qs_adj.at[:, -1].set(q0_adj)
+
+            @jax.jit
+            def body(n, qs_adj_):
+                # Main Runge-Kutta 4 solver step
+                h = rk4(self.RHS_adjoint, qs_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
+                        qs[:, -(n + 1)], qs_target[:, -(n + 1)])
+                return qs_adj_.at[:, -(n + 1)].set(h)
+
+            return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
+
+        elif ti_method == "bdf4":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint(x_ad, u, *args)
+
+            return bdf4(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
+
+        elif ti_method == "bdf4_updated":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint(x_ad, u, *args)
+
+            return bdf4_updated(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
+                                type='backward').T
+
+        elif ti_method == "implicit_midpoint":
+            @jax.jit
+            def body(x_ad, u, *args):
+                return self.RHS_adjoint(x_ad, u, *args)
+
+            return implicit_midpoint(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
+                                     type='backward').T
+
 
     def RHS_primal_target(self, q, f, v_x, v_y):
 
@@ -181,15 +243,14 @@ class advection:
 
         return jax.lax.fori_loop(1, self.Nt, body, qs)
 
-
-
+    ######################################### FOTR POD #############################################
     def InitialConditions_primal_PODG(self, q0):
 
-        return self.V.transpose() @ q0
+        return self.V_primal.transpose() @ q0
 
     def RHS_primal_PODG(self, a, f):
 
-        return self.A_conv @ a + self.VT_psi @ f
+        return self.A_conv @ a + self.VT_primal_psi @ f
 
     def TimeIntegration_primal_PODG(self, a, f0, ti_method="rk4"):
         # Time loop
@@ -233,85 +294,22 @@ class advection:
                                 Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Convection matrix (Needs to be changed if the velocity is time dependent)
-        C00 = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
-        self.A_conv = (self.V.transpose() @ C00) @ self.V
+        self.C00 = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
+        self.A_conv = (self.V_primal.transpose() @ self.C00) @ self.V_primal
 
         # Compute the pre factor for the control
-        self.VT_psi = self.V.transpose() @ self.psi
-
-
-    def InitialConditions_adjoint(self):
-        if self.Neta == 1:
-            q_adj = jnp.zeros_like(self.X)
-
-        # Arrange the values of T_adj and S_adj in 'q_adj'
-        q_adj = jnp.reshape(q_adj, newshape=self.NN, order="F")
-
-        return q_adj
-
-    def RHS_adjoint(self, q_adj, f, q, q_tar):
-
-        Coeff_conv_x = self.v_x[0]
-        Coeff_conv_y = self.v_y[0]
-
-        DT = Coeff_conv_x * self.Mat_adjoint.Grad_Xi_kron + Coeff_conv_y * self.Mat_adjoint.Grad_Eta_kron
-        q_adj_dot = DT.transpose().dot(q_adj) - (q - q_tar)
-
-        return q_adj_dot
-
-    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="rk4", dict_args=None):
-        # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
-        # as they are of more general use for a wide variety of problems
-        self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
-                                             Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
-
-        # Time loop
-        if ti_method == "rk4":
-            # Time loop
-            qs_adj = jnp.zeros((self.Nxi * self.Neta, self.Nt))
-            qs_adj = qs_adj.at[:, -1].set(q0_adj)
-
-            @jax.jit
-            def body(n, qs_adj_):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_adjoint, qs_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
-                             qs[:, -(n + 1)], qs_target[:, -(n + 1)])
-                return qs_adj_.at[:, -(n + 1)].set(h)
-
-            return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
-
-        elif ti_method == "bdf4":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args)
-
-            return bdf4(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
-
-        elif ti_method == "bdf4_updated":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args)
-
-            return bdf4_updated(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
-
-        elif ti_method == "implicit_midpoint":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args)
-
-            return implicit_midpoint(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
-                                     type='backward').T
+        self.VT_primal_psi = self.V_primal.transpose() @ self.psi
 
 
     def InitialConditions_adjoint_PODG(self, q0_adj):
 
-        return self.V.transpose() @ q0_adj
+        return self.V_adjoint.transpose() @ q0_adj
 
-    def RHS_adjoint_PODG(self, a_adj, f, a, a_target):
+    def RHS_adjoint_PODG(self, a_adj, f, a, q_target):
 
-        return - (self.A_conv_adj @ a_adj + (a - self.V.transpose() @ a_target))
+        return - (self.A_conv_adj @ a_adj + self.V_adjoint.transpose() @ (self.V_primal @ a - q_target))
 
-    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, as_target, ti_method="rk4"):
+    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, qs_target, ti_method="rk4"):
         # Time loop
         if ti_method == "rk4":
             # Time loop
@@ -322,7 +320,7 @@ class advection:
             def body(n, as_adj_):
                 # Main Runge-Kutta 4 solver step
                 h = rk4(self.RHS_adjoint_PODG, as_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
-                        as_[:, -(n + 1)], as_target[:, -(n + 1)])
+                        as_[:, -(n + 1)], qs_target[:, -(n + 1)])
                 return as_adj_.at[:, -(n + 1)].set(h)
 
             return jax.lax.fori_loop(1, self.Nt, body, as_adj)
@@ -332,25 +330,23 @@ class advection:
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return bdf4(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,), type='backward').T
+            return bdf4(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,), type='backward').T
 
         elif ti_method == "bdf4_updated":
             @jax.jit
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,), type='backward').T
+            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,),
+                                type='backward').T
 
         elif ti_method == "implicit_midpoint":
             @jax.jit
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,),
+            return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,),
                                      type='backward').T
 
-
     def POD_Galerkin_mat_adjoint(self):
-        self.A_conv_adj = self.A_conv.transpose()
-
-
+        self.A_conv_adj = (self.V_adjoint.transpose() @ self.C00.transpose()) @ self.V_adjoint
