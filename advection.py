@@ -307,11 +307,11 @@ class advection:
 
         return self.V.transpose() @ q0_adj
 
-    def RHS_adjoint_PODG(self, a_adj, f, a, a_target):
+    def RHS_adjoint_PODG(self, a_adj, f, a, q_target):
 
-        return - (self.A_conv_adj @ a_adj + (a - self.V.transpose() @ a_target))
+        return - (self.A_conv_adj @ a_adj + (a - self.V.transpose() @ q_target))
 
-    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, as_target, ti_method="rk4"):
+    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, qs_target, ti_method="rk4"):
         # Time loop
         if ti_method == "rk4":
             # Time loop
@@ -322,7 +322,7 @@ class advection:
             def body(n, as_adj_):
                 # Main Runge-Kutta 4 solver step
                 h = rk4(self.RHS_adjoint_PODG, as_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
-                        as_[:, -(n + 1)], as_target[:, -(n + 1)])
+                        as_[:, -(n + 1)], qs_target[:, -(n + 1)])
                 return as_adj_.at[:, -(n + 1)].set(h)
 
             return jax.lax.fori_loop(1, self.Nt, body, as_adj)
@@ -332,14 +332,14 @@ class advection:
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return bdf4(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,), type='backward').T
+            return bdf4(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,), type='backward').T
 
         elif ti_method == "bdf4_updated":
             @jax.jit
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,),
+            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,),
                                 type='backward').T
 
         elif ti_method == "implicit_midpoint":
@@ -347,7 +347,7 @@ class advection:
             def body(x_ad, u, *args):
                 return self.RHS_adjoint_PODG(x_ad, u, *args)
 
-            return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, as_target.T,),
+            return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,),
                                      type='backward').T
 
     def POD_Galerkin_mat_adjoint(self):
