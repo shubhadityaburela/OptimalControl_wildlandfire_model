@@ -103,14 +103,14 @@ def Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J_prev, max_Armijo_it
 
 
 
-def Update_Control_ROM(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, max_Armijo_iter,
+def Update_Control_PODG(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, max_Armijo_iter,
                    wf, delta, ti_method, red_nl, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
     mask = wf.psi.transpose()
 
-    dL_du = Calc_Grad_PODG(lamda, mask, f, wf.V, as_adj, **kwargs)
+    dL_du = Calc_Grad_PODG(lamda, mask, f, wf.V_adjoint, as_adj, **kwargs)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
@@ -124,7 +124,7 @@ def Update_Control_ROM(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, ma
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost_PODG(wf.V, as_, qs_target, f_new, lamda, **kwargs)
+            J = Calc_Cost_PODG(wf.V_primal, as_, qs_target, f_new, lamda, **kwargs)
             dJ = J_prev - delta * omega * L2norm_ROM(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J

@@ -1,7 +1,8 @@
 from advection import advection
 from Plots import PlotFlow
 from Helper import Calc_Cost, Update_Control, Calc_target_val, \
-    compute_red_basis, ControlSelectionMatrix, ControlSelectionMatrix_advection, Force_masking
+    compute_red_basis, ControlSelectionMatrix, ControlSelectionMatrix_advection, Force_masking, Calc_Cost_PODG, \
+    Update_Control_PODG
 import numpy as np
 import sys
 import os
@@ -62,10 +63,10 @@ sigma = jnp.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 500
+max_opt_steps = 1000
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1e-4  # initial step size for gradient update
+omega = 1e-3  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
@@ -85,7 +86,7 @@ if choose_selected_control:
 
 # %% ROM variables
 # Modes for the ROM
-n_rom = 100   # THIS IS THE TRICK. IF WE INCREASE THE NUMBER OF MODES HERE THEN WE GET A FULL RECONSTRUCTION OF THE TARGET AS n_rom approaches min(M,N). APART FROM THIS IT DOES NOT MAKE A HUGE DIFFERENCE IF WE REFINE THE BASIS AT ALL THE STEPS.
+n_rom = 50
 kwargs['n_rom'] = n_rom
 
 # %%
@@ -94,7 +95,7 @@ for opt_step in range(max_opt_steps):
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
 
-    if opt_step % 10 == 0:
+    if opt_step % 1 == 0:
         '''
         Forward calculation with primal at intermediate steps
         '''
@@ -107,21 +108,19 @@ for opt_step in range(max_opt_steps):
 
         # Construct the primal system matrices for the POD-Galerkin approach
         wf.POD_Galerkin_mat_primal()
-    else:
-        '''
-        Forward calculation with reduced system
-        '''
-        time_odeint = perf_counter()  # save timing
-        as_ = wf.TimeIntegration_primal_PODG(a_primal, f, ti_method=tm)
-        time_odeint = perf_counter() - time_odeint
-        if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
+    '''
+    Forward calculation with reduced system
+    '''
+    time_odeint = perf_counter()  # save timing
+    as_ = wf.TimeIntegration_primal_PODG(a_primal, f, ti_method=tm)
+    time_odeint = perf_counter() - time_odeint
+    if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
-        qs = wf.V_primal @ as_
 
     '''
     Objective and costs for control
     '''
-    J = Calc_Cost(qs, qs_target, f, lamda, **kwargs)
+    J = Calc_Cost_PODG(wf.V_primal, as_, qs_target, f, lamda, **kwargs)
     if opt_step == 0:
         pass
     else:
@@ -144,25 +143,21 @@ for opt_step in range(max_opt_steps):
 
         # Construct the adjoint system matrices for the POD-Galerkin approach
         wf.POD_Galerkin_mat_adjoint()
-    else:
-        '''
-        Backward calculation with reduced system
-        '''
-        time_odeint = perf_counter()  # save timing
-        as_adj = wf.TimeIntegration_adjoint_PODG(a_adjoint, f, as_, qs_target, ti_method=tm)
-        time_odeint = perf_counter() - time_odeint
-        if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
-
-        qs_adj = wf.V_adjoint @ as_adj
+    '''
+    Backward calculation with reduced system
+    '''
+    time_odeint = perf_counter()  # save timing
+    as_adj = wf.TimeIntegration_adjoint_PODG(a_adjoint, f, as_, qs_target, ti_method=tm)
+    time_odeint = perf_counter() - time_odeint
+    if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
     '''
      Update Control
     '''
     time_odeint = perf_counter()
-    f, J_opt, dL_du = Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J,
-                                     max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, red_nl=True,
-                                     **kwargs)
-
+    f, J_opt, dL_du = Update_Control_PODG(f, omega, lamda, a_primal, as_adj, qs_target, J,
+                                          max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, red_nl=True,
+                                          **kwargs)
     dL_du_list.append(dL_du)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
