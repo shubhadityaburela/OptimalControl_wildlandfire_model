@@ -6,6 +6,7 @@ from jax.scipy.optimize import minimize
 from scipy.optimize import root
 import jax.numpy as jnp
 import jax
+from jax.experimental import sparse
 
 import sys
 import os
@@ -79,7 +80,7 @@ def srPCA_1D(q, delta, X, t, spod_iter):
     print("Transformation interpolation error =  %4.4e " % interp_err)
     qmat = np.reshape(q, [-1, Nt])
     [N, M] = np.shape(qmat)
-    mu0 = N * M / (4 * np.sum(np.abs(qmat))) * 0.5
+    mu0 = N * M / (4 * np.sum(np.abs(qmat))) * 0.1
     lambd0 = 1 / np.sqrt(np.maximum(M, N)) * 1
     ret = shifted_rPCA(qmat, trafos, nmodes_max=60, eps=1e-5, Niter=spod_iter, use_rSVD=True, mu=mu0, lambd=lambd0,
                        dtol=1e-4)
@@ -376,67 +377,76 @@ def findIntervals(delta_s, delta):
 
 
 
-# def make_V_W_delta_fast(U, delta_s, X, num_sample):
-#     V_delta = []
-#     W_delta = []
-#     Nx = len(X)
-#     dx = X[1] - X[0]
-#
-#     D = central_FDMatrix(order=6, Nx=Nx, dx=dx)
-#     V = jnp.zeros_like(U)
-#     for it in range(num_sample):
-#         shift_val = delta_s[0][it]
-#         for col in range(U.shape[1]):
-#             V = V.at[:, col].set(jnp.interp(X - shift_val, X, U[:, col], period=X[-1]))
-#         V_delta.append(V)
-#         W_delta.append(D @ V)
-#
-#
-#     return jnp.array(V_delta), jnp.array(W_delta)
-# def make_LHS_mat_offline_adjoint_tmp(V_delta, W_delta):
-#     LHS_mat = []
-#
-#     # D(a) matrices are dynamic in nature thus need to be included in the time integration part
-#     for it in range(len(V_delta)):
-#         LHS11 = V_delta[it].transpose() @ V_delta[it]
-#         LHS12 = V_delta[it].transpose() @ W_delta[it]
-#
-#         LHS_mat.append([LHS11, LHS12])
-#
-#     return jnp.array(LHS_mat)
-# def make_RHS_mat_offline_adjoint_tmp(V_delta, A):
-#     RHS_mat = []
-#     for it in range(len(V_delta)):
-#         A_1 = (V_delta[it].transpose() @ A) @ V_delta[it]
-#
-#         RHS_mat.append(A_1)
-#
-#     return jnp.array(RHS_mat)
-# def make_LHS_mat_online_adjoint_tmp(LHS_matrix, Da, intervalIdx, weight):
-#     M11 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
-#     M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da[:, jnp.newaxis]
-#
-#     return M11, M12
-# def make_RHS_mat_online_adjoint_tmp(RHS_matrix, intervalIdx, weight):
-#     A11 = weight * RHS_matrix[intervalIdx][0] + (1 - weight) * RHS_matrix[intervalIdx + 1][0]
-#
-#     return A11
-# def make_target_mat_online_adjoint_tmp(V, Vd, a_, q_target, intervalIdx, weight):
-#     V_p = (weight * V[intervalIdx] + (1 - weight) * V[intervalIdx + 1])
-#     C1 = (weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]).transpose() @ (V_p @ a_ - q_target)
-#     return C1
-# def make_Da_tmp(a):
-#     D_a = a[:len(a)]
-#
-#     return D_a
-# def Calc_Cost_sPODG_tmp(V, as_, qs_target, f, lamda, intIds, weights, **kwargs):
-#     q = jnp.zeros_like(qs_target)
-#     for i in range(f.shape[1]):
-#         V_delta = weights[i] * V[intIds[i]] + (1 - weights[i]) * V[intIds[i] + 1]
-#         q = q.at[:, i].set(V_delta @ as_[:-2, i])
-#
-#     q_res = q - qs_target
-#
-#     cost = 1 / 2 * (L2norm_ROM(q_res, **kwargs)) ** 2 + (lamda['q_reg'] / 2) * (L2norm_ROM(f, **kwargs)) ** 2
-#
-#     return cost
+
+
+def get_T_one(delta_s, X):
+    from transforms import transforms
+
+    Nx = len(X)
+
+    data_shape = [Nx, 1, 1, 1]
+    dx = X[1] - X[0]
+    L = [X[-1]]
+
+    # Create the transformations
+    trafo_1 = transforms(data_shape, L, shifts=delta_s,
+                         dx=[dx],
+                         use_scipy_transform=False,
+                         interp_order=5)
+
+    return trafo_1.shifts_pos
+
+
+def make_LHS_mat_online_primal_one(Vd, Wd, Da):
+    M11 = Vd.transpose() @ Vd
+    M12 = (Vd.transpose() @ Wd) @ Da[:, jnp.newaxis]
+    M21 = M12.transpose()
+    M22 = (Da[:, jnp.newaxis].transpose() @ (Wd.transpose() @ Wd)) @ Da[:, jnp.newaxis]
+    M22_reg = jnp.where(M22 == 0, M22 + 1e-12, M22)
+    M = jnp.block([
+        [M11, M12],
+        [M21, M22_reg]
+    ])
+
+    return M
+
+
+
+def make_RHS_mat_online_primal_one(Vd, Wd, Ap, Da):
+
+    A11 = (Vd.transpose() @ Ap) @ Vd
+    A21 = Da[:, jnp.newaxis].transpose() @ ((Wd.transpose() @ Ap) @ Vd)
+    A = jnp.block([
+        [A11, jnp.zeros((A11.shape[0], 1))],
+        [A21, jnp.zeros((A21.shape[0], 1))]
+    ])
+
+    return A
+
+
+def make_control_mat_online_primal_one(Vd, Wd, f, psi, Da):
+
+    C1 = (Vd.transpose() @ psi) @ f
+    C2 = Da[:, jnp.newaxis].transpose() @ ((Wd.transpose() @ psi) @ f)
+
+    C = jnp.concatenate((C1, C2))
+
+    return C
+
+
+def make_target_mat_online_primal_one(Vdp, Vda, Wda, qs_target, a_, Da, weight, intervalIdx):
+    V_p = (weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1])
+    diff = V_p @ a_ - qs_target
+    C1 = Vda.transpose() @ diff
+    C2 = Da[:, jnp.newaxis].transpose() @ (Wda.transpose() @ diff)
+
+    C = jnp.concatenate((C1, C2))
+
+    return C
+
+
+def multiInterp2(x, xp, fp):
+    i = jnp.arange(x.size)
+    j = jnp.searchsorted(xp, x) - 1
+    d = (x - xp[j]) / (xp[j + 1] - xp[j])
+    return (1 - d) * fp.at[i, j].get() + fp.at[i, j + 1].get() * d

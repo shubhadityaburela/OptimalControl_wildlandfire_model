@@ -13,11 +13,14 @@ def Calc_Grad_PODG(lamda, mask, f, V, as_adj, **kwargs):
     return dL_du
 
 
-def Calc_Grad_sPODG(lamda, mask, f, V, intIds, weights, as_adj, **kwargs):
+def Calc_Grad_sPODG(lamda, mask, f, Vs_a, as_adj, as_, X, **kwargs):
     qs_adj = jnp.zeros((mask.shape[0], f.shape[1]))
     for i in range(f.shape[1]):
-        V_delta = weights[i] * V[intIds[i]] + (1 - weights[i]) * V[intIds[i] + 1]
-        qs_adj = qs_adj.at[:, i].set(V_delta @ as_adj[:-1, i])
+        z = jnp.asarray([as_[-1, i]])
+        Vd = jnp.zeros_like(Vs_a)
+        for col in range(Vs_a.shape[1]):
+            Vd = Vd.at[:, col].set(jnp.interp(X + z, X, Vs_a[:, col], period=X[-1]))
+        qs_adj = qs_adj.at[:, i].set(Vd @ as_adj[:-1, i])
 
     dL_du = lamda['q_reg'] * f + mask.transpose() @ qs_adj
 

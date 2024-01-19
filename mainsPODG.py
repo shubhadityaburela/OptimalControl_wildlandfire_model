@@ -1,8 +1,10 @@
+from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG
 from advection import advection
 from Plots import PlotFlow
 from Helper import ControlSelectionMatrix_advection, Force_masking
-from Helper_sPODG import subsample, Shifts_1D, srPCA_1D, findIntervals, get_T, make_target_term_matrices
+from Helper_sPODG import subsample, Shifts_1D, srPCA_1D, findIntervals, get_T, make_target_term_matrices, \
+    central_FDMatrix, get_T_one
 from Costs import Calc_Cost_sPODG
 import sys
 import os
@@ -47,11 +49,8 @@ n_c = Nxi  # Number of controls
 f_tilde = jnp.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
-wf.psi, wf.psi_tensor, wf.psiT_tensor = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0,
-                                                                         tilt_from=3*Nt//4)
+wf.psi, _, _ = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0, tilt_from=3*Nt//4)
 wf.psi = jax.numpy.asarray(wf.psi)
-wf.psi_tensor = jax.numpy.asarray(wf.psi_tensor)
-wf.psiT_tensor = jax.numpy.asarray(wf.psiT_tensor)
 
 #%% Solve for sigma
 impath = "./data/sPODG/"
@@ -63,7 +62,7 @@ jnp.save(impath + 'qs_org.npy', qs_org)
 sigma = jnp.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 50
+max_opt_steps = 5
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
@@ -73,6 +72,7 @@ qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f
 jnp.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
+J_opt_list = []  # Collecting the optimal cost functionals for plotting
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
@@ -84,9 +84,17 @@ if choose_selected_control:
     f = f_tilde
 
 #%% ROM Variables
-Num_sample = 1000
-# Nm_primal = 15
-# Nm_adjoint = 15
+Num_sample = 150
+# Nm_primal = 50
+# Nm_adjoint = 50
+
+D = central_FDMatrix(order=6, Nx=wf.Nxi, dx=wf.dx)
+# Construct linear operators
+Mat = CoefficientMatrix(orderDerivative=wf.firstderivativeOrder, Nxi=wf.Nxi,
+                        Neta=wf.Neta, periodicity='Periodic', dx=wf.dx, dy=wf.dy)
+# Convection matrix (Needs to be changed if the velocity is time dependent)
+A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
+A_a = - A_p.transpose()
 
 # Generate the shift samples
 delta_s = subsample(wf.X, num_sample=Num_sample)
@@ -100,7 +108,7 @@ for opt_step in range(max_opt_steps):
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
 
-    if opt_step % 1 == 0:
+    if opt_step % 5 == 0:
         '''
         Forward calculation with primal at intermediate steps
         '''
@@ -110,17 +118,18 @@ for opt_step in range(max_opt_steps):
         delta_primal, _ = Shifts_1D(qs, wf.X, wf.t)
 
         # Compute the reduced basis of the uncontrolled system
-        _, Nm_primal, wf.Vs_primal, _ = srPCA_1D(qs, delta_primal, wf.X, wf.t, spod_iter=10)
+        _, Nm_primal, Vs_p, _ = srPCA_1D(qs, delta_primal, wf.X, wf.t, spod_iter=50)
 
         # qss = jnp.zeros_like(qs)
         # for col in range(wf.Nt):
         #     shift_val = delta_primal[0][col]
         #     qss = qss.at[:, col].set(jnp.interp(wf.X - shift_val, wf.X, qs[:, col], period=wf.X[-1]))
         # # Compute the reduced basis of the uncontrolled system
-        # wf.Vs_primal, _, _ = randomized_svd(qss, n_components=Nm_primal)
+        # Vs_p, _, _ = randomized_svd(qss, n_components=Nm_primal)
+        # Vs_p = jnp.array(Vs_p)
 
         # Construct the primal system matrices for the sPOD-Galerkin approach
-        Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, samples=Num_sample)
+        Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, Vs_p, A_p, samples=Num_sample)
 
         # Initial condition for dynamical simulation
         a_primal = wf.InitialConditions_primal_sPODG(q0, delta_s, Vd_p)
@@ -132,17 +141,16 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
-
     # as_online = as_[:-1]
     # delta_online = as_[-1]
-    # tmp_low = wf.Vs_primal @ as_online
+    # tmp_low = Vs_p @ as_online
     # tmp = jnp.zeros_like(qs_target)
     # intIds, weights = findIntervals(delta_s, delta_online)
     # for i in range(f.shape[1]):
     #     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
     #     tmp = tmp.at[:, i].set(V_delta @ as_online[:, i])
     # print(jnp.linalg.norm(tmp_low - tmp_low_FOM) / jnp.linalg.norm(tmp_low_FOM))
-    # print(jnp.linalg.norm(tmp - qtilde) / jnp.linalg.norm(qtilde))
+    # print(jnp.linalg.norm(tmp - qs) / jnp.linalg.norm(qtilde))
     # from mpl_toolkits.axes_grid1 import make_axes_locatable
     # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
     # X_1D_grid = X_1D_grid.T
@@ -177,7 +185,6 @@ for opt_step in range(max_opt_steps):
     # plt.show()
     # exit()
 
-
     '''
     Objective and costs for control
     '''
@@ -194,24 +201,22 @@ for opt_step in range(max_opt_steps):
             break
     J_list.append(J)
 
-    if opt_step % 1 == 0:
+    if opt_step % 5 == 0:
         '''
         Backward calculation with adjoint at intermediate steps
         '''
         qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, ti_method=tm, dict_args=lamda)
 
         # Compute the reduced basis of the uncontrolled system
-        _, Nm_adjoint, wf.Vs_adjoint, tmp_low_FOM = srPCA_1D(qs_adj, delta_primal, wf.X, wf.t, spod_iter=10)
+        _, Nm_adjoint, Vs_a, tmp_low_FOM = srPCA_1D(qs_adj, delta_primal, wf.X, wf.t, spod_iter=50)
 
         # qss_adj = jnp.zeros_like(qs)
         # for col in range(wf.Nt):
         #     shift_val = delta_primal[0][col]
         #     qss_adj = qss_adj.at[:, col].set(jnp.interp(wf.X - shift_val, wf.X, qs_adj[:, col], period=wf.X[-1]))
         # # Compute the reduced basis of the uncontrolled system
-        # wf.Vs_adjoint, _, _ = randomized_svd(qss_adj, n_components=Nm_adjoint)
-
-        # Construct the primal system matrices for the sPOD-Galerkin approach
-        Vd_a, Wd_a, lhs_a, rhs_a = wf.sPOD_Galerkin_mat_adjoint(qs_target, Vd_p, T_delta, samples=Num_sample)
+        # Vs_a, _, _ = randomized_svd(qss_adj, n_components=Nm_adjoint)
+        # Vs_a = jnp.array(Vs_a)
 
         # Initial condition for dynamical simulation
         a_adjoint = wf.InitialConditions_adjoint_sPODG(Nm_adjoint, as_)
@@ -219,64 +224,68 @@ for opt_step in range(max_opt_steps):
     Backward calculation with reduced system
     '''
     time_odeint = perf_counter()  # save timing
-    as_adj = wf.TimeIntegration_adjoint_sPODG(lhs_a, rhs_a, Vd_p, Vd_a, Wd_a, qs_target, a_adjoint, f, as_,
-                                              delta_s, ti_method=tm)
+    as_adj = wf.TimeIntegration_adjoint_sPODG(a_adjoint, f, as_, A_a, D, Vs_a, Vd_p, qs_target, delta_s, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
 
 
-    as_online = as_adj[:Nm_adjoint]
-    delta_online = as_adj[-1]
-    tmp_low = wf.Vs_adjoint @ as_online
-    tmp = jnp.zeros_like(qs_target)
-    for i in range(f.shape[1]):
-        V_delta = weights[i] * Vd_a[intIds[i]] + (1 - weights[i]) * Vd_a[intIds[i] + 1]
-        tmp = tmp.at[:, i].set(V_delta @ as_online[:, i])
-    print(jnp.linalg.norm(tmp_low - tmp_low_FOM) / jnp.linalg.norm(tmp_low_FOM))
-    print(jnp.linalg.norm(tmp - qs_adj) / jnp.linalg.norm(qs_adj))
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
-    X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
-    X_1D_grid = X_1D_grid.T
-    t_grid = t_grid.T
-    fig = plt.figure(figsize=(15, 5))
-    ax1 = fig.add_subplot(131)
-    im1 = ax1.pcolormesh(X_1D_grid, t_grid, tmp_low, cmap='YlOrRd')
-    ax1.axis('off')
-    ax1.set_title(r"$q(x, t)$")
-    divider = make_axes_locatable(ax1)
-    cax = divider.append_axes('right', size='10%', pad=0.08)
-    fig.colorbar(im1, cax=cax, orientation='vertical')
-
-    ax2 = fig.add_subplot(132)
-    im2 = ax2.pcolormesh(X_1D_grid, t_grid, tmp, cmap='YlOrRd')
-    ax2.axis('off')
-    ax2.set_title(r"$q(x, t)$")
-    divider = make_axes_locatable(ax2)
-    cax = divider.append_axes('right', size='10%', pad=0.08)
-    fig.colorbar(im2, cax=cax, orientation='vertical')
-
-    ax3 = fig.add_subplot(133)
-    im3 = ax3.pcolormesh(X_1D_grid, t_grid, tmp_low_FOM, cmap='YlOrRd')
-    ax3.axis('off')
-    ax3.set_title(r"$q(x, t)$")
-    divider = make_axes_locatable(ax3)
-    cax = divider.append_axes('right', size='10%', pad=0.08)
-    fig.colorbar(im3, cax=cax, orientation='vertical')
-
-    fig.supylabel(r"time $t$")
-    fig.supxlabel(r"space $x$")
-    plt.show()
-    exit()
+    # as_online = as_adj[:Nm_adjoint]
+    # delta_online = as_[-1]
+    # tmp_low = Vs_a @ as_online
+    # tmp = jnp.zeros_like(qs_target)
+    # for i in range(f.shape[1]):
+    #     z = jnp.asarray([delta_online[i]])
+    #     Vd = jnp.zeros_like(Vs_a)
+    #     for col in range(Vs_a.shape[1]):
+    #         Vd = Vd.at[:, col].set(jnp.interp(wf.X + z, wf.X, Vs_a[:, col], period=wf.X[-1]))
+    #     tmp = tmp.at[:, i].set(Vd @ as_online[:, i])
+    # print(jnp.linalg.norm(tmp_low - tmp_low_FOM) / jnp.linalg.norm(tmp_low_FOM))
+    # print(jnp.linalg.norm(tmp - qs_adj) / jnp.linalg.norm(qs_adj))
+    # from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
+    # X_1D_grid = X_1D_grid.T
+    # t_grid = t_grid.T
+    # fig = plt.figure(figsize=(15, 5))
+    # ax1 = fig.add_subplot(131)
+    # im1 = ax1.pcolormesh(X_1D_grid, t_grid, tmp_low, cmap='YlOrRd')
+    # ax1.axis('off')
+    # ax1.set_title(r"$q(x, t)$")
+    # divider = make_axes_locatable(ax1)
+    # cax = divider.append_axes('right', size='10%', pad=0.08)
+    # fig.colorbar(im1, cax=cax, orientation='vertical')
+    #
+    # ax2 = fig.add_subplot(132)
+    # im2 = ax2.pcolormesh(X_1D_grid, t_grid, tmp, cmap='YlOrRd')
+    # ax2.axis('off')
+    # ax2.set_title(r"$q(x, t)$")
+    # divider = make_axes_locatable(ax2)
+    # cax = divider.append_axes('right', size='10%', pad=0.08)
+    # fig.colorbar(im2, cax=cax, orientation='vertical')
+    #
+    # ax3 = fig.add_subplot(133)
+    # im3 = ax3.pcolormesh(X_1D_grid, t_grid, tmp_low_FOM, cmap='YlOrRd')
+    # ax3.axis('off')
+    # ax3.set_title(r"$q(x, t)$")
+    # divider = make_axes_locatable(ax3)
+    # cax = divider.append_axes('right', size='10%', pad=0.08)
+    # fig.colorbar(im3, cax=cax, orientation='vertical')
+    #
+    # fig.supylabel(r"time $t$")
+    # fig.supxlabel(r"space $x$")
+    # plt.show()
+    # exit()
 
     '''
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du = Update_Control_sPODG(f, omega, lamda, lhs_p, rhs_p, c_p, a_primal, as_adj, qs_target, delta_s,
-                                           J, intIds, weights, max_Armijo_iter=15, wf=wf,
+    f, J_opt, dL_du = Update_Control_sPODG(f, omega, lamda, a_primal, as_adj, as_, qs_target, Vs_a,
+                                           J, Vd_p, lhs_p, rhs_p, c_p, delta_s, intIds, weights, max_Armijo_iter=15, wf=wf,
                                            delta=1e-4, ti_method=tm, red_nl=True, **kwargs)
+
     dL_du_list.append(dL_du)
+    J_opt_list.append(J_opt)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     if verbose: print(
@@ -307,14 +316,17 @@ delta_online = as__[-1]
 qs = jnp.zeros_like(qs_target)
 intIds, weights = findIntervals(delta_s, delta_online)
 for i in range(f.shape[1]):
-    V_delta = weights[i] * wf.V_delta_primal[intIds[i]] + (1 - weights[i]) * wf.V_delta_primal[intIds[i] + 1]
+    V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
     qs = qs.at[:, i].set(V_delta @ as_online[:, i])
 
 as_adj_online = as_adj[:Nm_adjoint]
 qs_adj = jnp.zeros_like(qs_target)
 for i in range(f.shape[1]):
-    V_delta = weights[i] * wf.V_delta_adjoint[intIds[i]] + (1 - weights[i]) * wf.V_delta_adjoint[intIds[i] + 1]
-    qs_adj = qs_adj.at[:, i].set(V_delta @ as_adj_online[:, i])
+    z = jnp.asarray([delta_online[i]])
+    Vd = jnp.zeros_like(Vs_a)
+    for col in range(Vs_a.shape[1]):
+        Vd = Vd.at[:, col].set(jnp.interp(wf.X + z, wf.X, Vs_a[:, col], period=wf.X[-1]))
+    qs_adj = qs_adj.at[:, i].set(Vd @ as_adj_online[:, i])
 
 f_opt = wf.psi @ f
 
@@ -342,6 +354,16 @@ if Dimension == "1D":
     pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/sPODG_1D/")
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/sPODG_1D/")
     pf.plot1D(sigma, name="sigma", immpath="./plots/sPODG_1D/")
+
+    fig1, ax1 = plt.subplots(nrows=1, ncols=1)  # create figure & 1 axis
+    ax1.plot(J_opt_list)
+    fig1.savefig("./plots/sPODG_1D/J.png")  # save the figure to file
+    fig2, ax2 = plt.subplots(nrows=1, ncols=1)  # create figure & 1 axis
+    ax2.plot(dL_du_list)
+    fig2.savefig("./plots/sPODG_1D/dL_du.png")  # save the figure to file
+
+
+
 
 
 

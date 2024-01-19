@@ -108,17 +108,17 @@ def Update_Control_PODG(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, m
                         omega = omega / 2
 
 
-def Update_Control_sPODG(f, omega, lamda, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, J_prev, intIds, weights,
+def Update_Control_sPODG(f, omega, lamda, a0_primal, as_adj, as_, qs_target, Vs_a, J_prev, Vd_p, lhs_p, rhs_p, c_p, delta_s, intIds, weights,
                          max_Armijo_iter, wf, delta, ti_method, red_nl, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
-    dL_du = Calc_Grad_sPODG(lamda, wf.psi, f, wf.V_delta_adjoint, intIds, weights, as_adj, **kwargs)
+    dL_du = Calc_Grad_sPODG(lamda, wf.psi, f, Vs_a, as_adj, as_, wf.X, **kwargs)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
         # Solve the primal equation
-        as_ = wf.TimeIntegration_primal_sPODG(lhs, rhs, c, a0_primal, f_new, delta_s, ti_method)
+        as_ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a0_primal, f_new, delta_s, ti_method)
 
         if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
@@ -127,7 +127,7 @@ def Update_Control_sPODG(f, omega, lamda, lhs, rhs, c, a0_primal, as_adj, qs_tar
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost_sPODG(wf.V_delta_primal, as_, qs_target, f_new, lamda, intIds, weights, **kwargs)
+            J = Calc_Cost_sPODG(Vd_p, as_, qs_target, f_new, lamda, intIds, weights, **kwargs)
             dJ = J_prev - delta * omega * L2norm_ROM(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J
