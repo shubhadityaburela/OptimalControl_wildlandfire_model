@@ -17,12 +17,12 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 200
+Nxi = 400
 Neta = 1
-Nt = 400
+Nt = 600
 
 # solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.4, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -58,7 +58,7 @@ jnp.save(impath + 'qs_org.npy', qs_org)
 sigma = jnp.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 500
+max_opt_steps = 3
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
