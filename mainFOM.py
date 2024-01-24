@@ -1,6 +1,8 @@
+from Costs import Calc_Cost
+from Helper import ControlSelectionMatrix_advection, Force_masking
+from Update import Update_Control
 from advection import advection
 from Plots import PlotFlow
-from Helper import Calc_Cost, Update_Control, Force_masking, Calc_target_val, ControlSelectionMatrix_advection
 import numpy as np
 import sys
 import os
@@ -17,12 +19,12 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 400
+Nxi = 200
 Neta = 1
-Nt = 600
+Nt = 400
 
 # solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.4, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -42,11 +44,8 @@ n_c = 200  # Number of controls
 f_tilde = jnp.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
-wf.psi, wf.psi_tensor, wf.psiT_tensor = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0,
-                                                                         tilt_from=3*Nt//4)
+wf.psi, _, _ = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0, tilt_from=3*Nt//4)
 wf.psi = jax.numpy.asarray(wf.psi)
-wf.psi_tensor = jax.numpy.asarray(wf.psi_tensor)
-wf.psiT_tensor = jax.numpy.asarray(wf.psiT_tensor)
 
 #%% Solve for sigma
 impath = "./data/FOM/"
@@ -58,16 +57,18 @@ jnp.save(impath + 'qs_org.npy', qs_org)
 sigma = jnp.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 3
+max_opt_steps = 5000
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
-dL_du_min = 1e-6  # Convergence criteria
+dL_du_min = 1e-4  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
 jnp.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
+J_opt_list = []  # Collecting the optimal cost functional for plotting
+dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
@@ -117,9 +118,14 @@ for opt_step in range(max_opt_steps):
     '''
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du = Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J,
-                                     max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm,
+                                     max_Armijo_iter=20, wf=wf, delta=1e-4, ti_method=tm,
                                      choose_selected_control=choose_selected_control, **kwargs)
+
+    # Save for plotting
+    J_opt_list.append(J_opt)
     dL_du_list.append(dL_du)
+    dL_du_ratio_list.append(dL_du / dL_du_list[0])
+
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     if verbose: print(
@@ -161,6 +167,11 @@ qs_adj_opt = jnp.load(impath + 'qs_adj_opt.npy')
 f_opt = jnp.load(impath + 'f_opt.npy')
 
 
+# Save the convergence lists
+np.save(impath + 'J_opt_list.npy', J_opt_list)
+np.save(impath + 'dL_du_ratio_list.npy', dL_du_ratio_list)
+
+
 # Plot the results
 pf = PlotFlow(wf.X, wf.Y, wf.t)
 if Dimension == "1D":
@@ -170,8 +181,5 @@ if Dimension == "1D":
     pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/FOM_1D/")
     pf.plot1D(sigma, name="sigma", immpath="./plots/FOM_1D/")
-else:
-    pf.plot2D(qs_org, name="qs_org", immpath="./plots/FOM_2D/",
-              save_plot=True, plot_every=10, plot_at_all=True)
-    pf.plot2D(qs_opt, name="qs_opt", immpath="./plots/FOM_2D/",
-              save_plot=True, plot_every=10, plot_at_all=True)
+
+    pf.plot1D_FOM_converg(J_opt_list, dL_du_ratio_list, immpath="./plots/FOM_1D/")

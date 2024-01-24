@@ -1,10 +1,10 @@
+from Costs import Calc_Cost_PODG
+from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis
+from Update import Update_Control_PODG
 from advection import advection
 from Plots import PlotFlow
-from Helper import Calc_Cost, Update_Control, Calc_target_val, \
-    compute_red_basis, ControlSelectionMatrix, ControlSelectionMatrix_advection, Force_masking, Calc_Cost_PODG, \
-    Update_Control_PODG
-import numpy as np
 import sys
+import numpy as np
 import os
 from time import perf_counter
 import jax
@@ -45,12 +45,8 @@ n_c = 200  # Number of controls
 f_tilde = jnp.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
-wf.psi, wf.psi_tensor, wf.psiT_tensor = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0,
-                                                                         tilt_from=3*Nt//4)
+wf.psi, _, _ = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0, tilt_from=3*Nt//4)
 wf.psi = jax.numpy.asarray(wf.psi)
-wf.psi_tensor = jax.numpy.asarray(wf.psi_tensor)
-wf.psiT_tensor = jax.numpy.asarray(wf.psiT_tensor)
-
 
 #%% Solve for sigma
 impath = "./data/PODG/"
@@ -63,16 +59,21 @@ sigma = jnp.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 1000
+max_opt_steps = 5000
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
-dL_du_min = 1e-6  # Convergence criteria
+dL_du_min = 1e-4  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f_tilde, ti_method=tm)
 jnp.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
+J_opt_list = []  # Collecting the optimal cost functional for plotting
+dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
+basis_refine_itr_list = []  # Collects the optimization step number at which the basis refinement is carried out
+trunc_modes_list = []  # Collects the truncated number of modes at each basis refinement step
+
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
@@ -89,13 +90,16 @@ if choose_selected_control:
 n_rom = 50
 kwargs['n_rom'] = n_rom
 
+# Basis update condition
+refine = True
+
 # %%
 for opt_step in range(max_opt_steps):
 
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
 
-    if opt_step % 1 == 0:
+    if refine:
         '''
         Forward calculation with primal at intermediate steps
         '''
@@ -108,6 +112,9 @@ for opt_step in range(max_opt_steps):
 
         # Construct the primal system matrices for the POD-Galerkin approach
         wf.POD_Galerkin_mat_primal()
+
+        basis_refine_itr_list.append(opt_step)
+        trunc_modes_list.append(n_rom)
     '''
     Forward calculation with reduced system
     '''
@@ -130,7 +137,7 @@ for opt_step in range(max_opt_steps):
             break
     J_list.append(J)
 
-    if opt_step % 10 == 0:
+    if refine:
         '''
         Backward calculation with adjoint at intermediate steps
         '''
@@ -155,10 +162,21 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter()
-    f, J_opt, dL_du = Update_Control_PODG(f, omega, lamda, a_primal, as_adj, qs_target, J,
-                                          max_Armijo_iter=100, wf=wf, delta=1e-4, ti_method=tm, red_nl=True,
-                                          **kwargs)
+    f, J_opt, dL_du, refine = Update_Control_PODG(f, omega, lamda, a_primal, as_adj, qs_target, J,
+                                                  max_Armijo_iter=15, wf=wf, delta=1e-4, ti_method=tm,
+                                                  **kwargs)
+    # Save for plotting
+    J_opt_list.append(J_opt)
     dL_du_list.append(dL_du)
+    dL_du_ratio_list.append(dL_du / dL_du_list[0])
+
+    '''
+    Basis refinement
+    '''
+    if J_opt_list[opt_step] >= J_opt_list[opt_step - 1]:
+        refine = True
+
+
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     if verbose: print(
@@ -170,14 +188,16 @@ for opt_step in range(max_opt_steps):
         if verbose: print("\n\n-------------------------------")
         if verbose: print(
             f"WARNING... maximal number of steps reached, "
-            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
+            f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
     elif dL_du / dL_du_list[0] < dL_du_min:
         if verbose: print("\n\n-------------------------------")
         if verbose: print(
             f"Optimization converged with, "
-            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
+            f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
 
@@ -201,6 +221,12 @@ qs_opt = jnp.load(impath + 'qs_opt.npy')
 qs_adj_opt = jnp.load(impath + 'qs_adj_opt.npy')
 f_opt = jnp.load(impath + 'f_opt.npy')
 
+# Save the convergence lists
+np.save(impath + 'J_opt_list.npy', J_opt_list)
+np.save(impath + 'dL_du_ratio_list.npy', dL_du_ratio_list)
+np.save(impath + 'basis_refine_itr_list.npy', basis_refine_itr_list)
+np.save(impath + 'trunc_modes_list.npy', trunc_modes_list)
+
 
 # Plot the results
 pf = PlotFlow(wf.X, wf.Y, wf.t)
@@ -211,3 +237,7 @@ if Dimension == "1D":
     pf.plot1D(qs_adj_opt, name="qs_adj_opt", immpath="./plots/PODG_1D/")
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/PODG_1D/")
     pf.plot1D(sigma, name="sigma", immpath="./plots/PODG_1D/")
+
+    pf.plot1D_ROM_converg(J_opt_list, dL_du_ratio_list,
+                      basis_refine_itr_list, trunc_modes_list,
+                      immpath="./plots/PODG_1D/")

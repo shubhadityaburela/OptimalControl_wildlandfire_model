@@ -8,6 +8,7 @@ import os
 import matplotlib.animation as animation
 from matplotlib import cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.ticker import MaxNLocator
 import moviepy.video.io.ImageSequenceClip
 import glob
 
@@ -88,6 +89,53 @@ class PlotFlow:
         fig.supxlabel(r"space $x$")
 
         fig.savefig(immpath + name, dpi=300, transparent=True)
+
+    def plot1D_ROM_converg(self, J, dL_du, itr, Nm, immpath):
+
+        x = np.arange(len(J))
+
+        os.makedirs(immpath, exist_ok=True)
+
+        fig1 = plt.figure(figsize=(8, 8))
+        ax1 = fig1.add_subplot(111, label="1")
+        ax1.plot(np.arange(len(J)), J, color="C0", label="Cost functional")
+        ax1.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
+        ax1.set_ylabel(r"$J$", color="C0")
+        ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax1.tick_params(axis='x', colors="C0")
+        ax1.tick_params(axis='y', colors="C0")
+        ax1.plot(itr, [J[i] for i in itr], ls="", marker="*", color="C1", label="basis refinement steps")
+        fig1.savefig(immpath + "J", dpi=300, transparent=True)
+
+        fig3 = plt.figure(figsize=(8, 8))
+        ax3 = fig3.add_subplot(111, label="4")
+        ax3.semilogy(np.arange(len(dL_du)), dL_du)
+        ax3.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
+        ax3.set_ylabel(r"relative $\quad \frac{dL}{du}$", color="C0")
+        fig3.savefig(immpath + "dL_du_ratio", dpi=300, transparent=True)
+
+    def plot1D_FOM_converg(self, J, dL_du, immpath):
+
+        x = np.arange(len(J))
+
+        os.makedirs(immpath, exist_ok=True)
+
+        fig1 = plt.figure(figsize=(8, 8))
+        ax1 = fig1.add_subplot(111, label="1")
+        ax1.plot(np.arange(len(J)), J, color="C0", label="Cost functional")
+        ax1.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
+        ax1.set_ylabel(r"$J$", color="C0")
+        ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax1.tick_params(axis='x', colors="C0")
+        ax1.tick_params(axis='y', colors="C0")
+        fig1.savefig(immpath + "J", dpi=300, transparent=True)
+
+        fig3 = plt.figure(figsize=(8, 8))
+        ax3 = fig3.add_subplot(111, label="4")
+        ax3.semilogy(np.arange(len(dL_du)), dL_du)
+        ax3.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
+        ax3.set_ylabel(r"relative $\quad \frac{dL}{du}$", color="C0")
+        fig3.savefig(immpath + "dL_du_ratio", dpi=300, transparent=True)
 
     def plot2D(self, Q, name, immpath, save_plot=False, plot_every=10, plot_at_all=False):
         Q_T = np.reshape(np.transpose(Q[:self.Nx * self.Ny]), newshape=[self.Nt, self.Nx, self.Ny], order="F")
