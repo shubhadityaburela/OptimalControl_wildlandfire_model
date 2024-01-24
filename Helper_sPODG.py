@@ -80,7 +80,7 @@ def srPCA_1D(q, delta, X, t, spod_iter):
     print("Transformation interpolation error =  %4.4e " % interp_err)
     qmat = np.reshape(q, [-1, Nt])
     [N, M] = np.shape(qmat)
-    mu0 = N * M / (4 * np.sum(np.abs(qmat))) * 0.1
+    mu0 = N * M / (4 * np.sum(np.abs(qmat))) * 0.05
     lambd0 = 1 / np.sqrt(np.maximum(M, N)) * 1
     ret = shifted_rPCA(qmat, trafos, nmodes_max=60, eps=1e-5, Niter=spod_iter, use_rSVD=True, mu=mu0, lambd=lambd0,
                        dtol=1e-4)

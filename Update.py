@@ -108,12 +108,12 @@ def Update_Control_PODG(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, m
                         omega = omega / 2
 
 
-def Update_Control_sPODG(f, omega, lamda, a0_primal, as_adj, as_, qs_target, Vs_a, J_prev, Vd_p, lhs_p, rhs_p, c_p, delta_s, intIds, weights,
-                         max_Armijo_iter, wf, delta, ti_method, red_nl, **kwargs):
+def Update_Control_sPODG(f, omega, lamda, a0_primal, qs_adj, qs_target, J_prev, Vd_p, lhs_p, rhs_p, c_p, delta_s, intIds, weights,
+                         max_Armijo_iter, wf, delta, ti_method, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
-    dL_du = Calc_Grad_sPODG(lamda, wf.psi, f, Vs_a, as_adj, as_, wf.X, **kwargs)
+    dL_du = Calc_Grad(lamda, wf.psi, f, qs_adj, **kwargs)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
@@ -133,13 +133,13 @@ def Update_Control_sPODG(f, omega, lamda, a0_primal, as_adj, as_, qs_target, Vs_
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
+                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), False
             elif J >= dJ or jnp.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
                     print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
-                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
+                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True
                 else:
                     if J == dJ:
                         print(f"J has started to saturate now so we reduce the omega = {omega}!",
@@ -151,7 +151,7 @@ def Update_Control_sPODG(f, omega, lamda, a0_primal, as_adj, as_, qs_target, Vs_
                             f_opt = f_new
                             print(
                                 f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
-                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
+                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True
                     else:
                         print(f"No NANs found but step size omega = {omega} too large!",
                               f"Reducing omega at iter={k + 1}, with J={J}")

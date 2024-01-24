@@ -62,9 +62,9 @@ jnp.save(impath + 'qs_org.npy', qs_org)
 sigma = jnp.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 5
+max_opt_steps = 30
 verbose = True
-lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
+lamda = {'q_reg': 1e-4}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
 dL_du_min = 1e-6  # Convergence criteria
 f = jnp.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
@@ -72,7 +72,10 @@ qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f0=f
 jnp.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
-J_opt_list = []  # Collecting the optimal cost functionals for plotting
+J_opt_list = []  # Collecting the optimal cost functional for plotting
+dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
+basis_refine_itr_list = []  # Collects the optimization step number at which the basis refinement is carried out
+trunc_modes_list = []  # Collects the truncated number of modes at each basis refinement step
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
@@ -84,7 +87,7 @@ if choose_selected_control:
     f = f_tilde
 
 #%% ROM Variables
-Num_sample = 150
+Num_sample = 200
 # Nm_primal = 50
 # Nm_adjoint = 50
 
@@ -102,13 +105,15 @@ delta_s = subsample(wf.X, num_sample=Num_sample)
 # Extract transformation operators based on sub-sampled delta
 T_delta, _ = get_T(delta_s, wf.X, wf.t)
 
+# Basis update condition
+refine = True
 # %%
 for opt_step in range(max_opt_steps):
 
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
 
-    if opt_step % 5 == 0:
+    if refine:
         '''
         Forward calculation with primal at intermediate steps
         '''
@@ -120,19 +125,14 @@ for opt_step in range(max_opt_steps):
         # Compute the reduced basis of the uncontrolled system
         _, Nm_primal, Vs_p, _ = srPCA_1D(qs, delta_primal, wf.X, wf.t, spod_iter=50)
 
-        # qss = jnp.zeros_like(qs)
-        # for col in range(wf.Nt):
-        #     shift_val = delta_primal[0][col]
-        #     qss = qss.at[:, col].set(jnp.interp(wf.X - shift_val, wf.X, qs[:, col], period=wf.X[-1]))
-        # # Compute the reduced basis of the uncontrolled system
-        # Vs_p, _, _ = randomized_svd(qss, n_components=Nm_primal)
-        # Vs_p = jnp.array(Vs_p)
-
         # Construct the primal system matrices for the sPOD-Galerkin approach
         Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, Vs_p, A_p, samples=Num_sample)
 
         # Initial condition for dynamical simulation
         a_primal = wf.InitialConditions_primal_sPODG(q0, delta_s, Vd_p)
+
+        basis_refine_itr_list.append(opt_step)
+        trunc_modes_list.append(Nm_primal)
     '''
     Forward calculation
     '''
@@ -140,50 +140,6 @@ for opt_step in range(max_opt_steps):
     as_ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_primal, f, delta_s, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
-
-    # as_online = as_[:-1]
-    # delta_online = as_[-1]
-    # tmp_low = Vs_p @ as_online
-    # tmp = jnp.zeros_like(qs_target)
-    # intIds, weights = findIntervals(delta_s, delta_online)
-    # for i in range(f.shape[1]):
-    #     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
-    #     tmp = tmp.at[:, i].set(V_delta @ as_online[:, i])
-    # print(jnp.linalg.norm(tmp_low - tmp_low_FOM) / jnp.linalg.norm(tmp_low_FOM))
-    # print(jnp.linalg.norm(tmp - qs) / jnp.linalg.norm(qtilde))
-    # from mpl_toolkits.axes_grid1 import make_axes_locatable
-    # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
-    # X_1D_grid = X_1D_grid.T
-    # t_grid = t_grid.T
-    # fig = plt.figure(figsize=(15, 5))
-    # ax1 = fig.add_subplot(131)
-    # im1 = ax1.pcolormesh(X_1D_grid, t_grid, tmp_low, cmap='YlOrRd')
-    # ax1.axis('off')
-    # ax1.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax1)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im1, cax=cax, orientation='vertical')
-    #
-    # ax2 = fig.add_subplot(132)
-    # im2 = ax2.pcolormesh(X_1D_grid, t_grid, tmp, cmap='YlOrRd')
-    # ax2.axis('off')
-    # ax2.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax2)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im2, cax=cax, orientation='vertical')
-    #
-    # ax3 = fig.add_subplot(133)
-    # im3 = ax3.pcolormesh(X_1D_grid, t_grid, tmp_low_FOM, cmap='YlOrRd')
-    # ax3.axis('off')
-    # ax3.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax3)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im3, cax=cax, orientation='vertical')
-    #
-    # fig.supylabel(r"time $t$")
-    # fig.supxlabel(r"space $x$")
-    # plt.show()
-    # exit()
 
     '''
     Objective and costs for control
@@ -201,91 +157,35 @@ for opt_step in range(max_opt_steps):
             break
     J_list.append(J)
 
-    if opt_step % 5 == 0:
-        '''
-        Backward calculation with adjoint at intermediate steps
-        '''
-        qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, ti_method=tm, dict_args=lamda)
-
-        # Compute the reduced basis of the uncontrolled system
-        _, Nm_adjoint, Vs_a, tmp_low_FOM = srPCA_1D(qs_adj, delta_primal, wf.X, wf.t, spod_iter=50)
-
-        # qss_adj = jnp.zeros_like(qs)
-        # for col in range(wf.Nt):
-        #     shift_val = delta_primal[0][col]
-        #     qss_adj = qss_adj.at[:, col].set(jnp.interp(wf.X - shift_val, wf.X, qs_adj[:, col], period=wf.X[-1]))
-        # # Compute the reduced basis of the uncontrolled system
-        # Vs_a, _, _ = randomized_svd(qss_adj, n_components=Nm_adjoint)
-        # Vs_a = jnp.array(Vs_a)
-
-        # Initial condition for dynamical simulation
-        a_adjoint = wf.InitialConditions_adjoint_sPODG(Nm_adjoint, as_)
     '''
-    Backward calculation with reduced system
+    Backward calculation with adjoint
     '''
     time_odeint = perf_counter()  # save timing
-    as_adj = wf.TimeIntegration_adjoint_sPODG(a_adjoint, f, as_, A_a, D, Vs_a, Vd_p, qs_target, delta_s, ti_method=tm)
+    qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, ti_method=tm, dict_args=lamda)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
-
-
-
-    # as_online = as_adj[:Nm_adjoint]
-    # delta_online = as_[-1]
-    # tmp_low = Vs_a @ as_online
-    # tmp = jnp.zeros_like(qs_target)
-    # for i in range(f.shape[1]):
-    #     z = jnp.asarray([delta_online[i]])
-    #     Vd = jnp.zeros_like(Vs_a)
-    #     for col in range(Vs_a.shape[1]):
-    #         Vd = Vd.at[:, col].set(jnp.interp(wf.X + z, wf.X, Vs_a[:, col], period=wf.X[-1]))
-    #     tmp = tmp.at[:, i].set(Vd @ as_online[:, i])
-    # print(jnp.linalg.norm(tmp_low - tmp_low_FOM) / jnp.linalg.norm(tmp_low_FOM))
-    # print(jnp.linalg.norm(tmp - qs_adj) / jnp.linalg.norm(qs_adj))
-    # from mpl_toolkits.axes_grid1 import make_axes_locatable
-    # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
-    # X_1D_grid = X_1D_grid.T
-    # t_grid = t_grid.T
-    # fig = plt.figure(figsize=(15, 5))
-    # ax1 = fig.add_subplot(131)
-    # im1 = ax1.pcolormesh(X_1D_grid, t_grid, tmp_low, cmap='YlOrRd')
-    # ax1.axis('off')
-    # ax1.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax1)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im1, cax=cax, orientation='vertical')
-    #
-    # ax2 = fig.add_subplot(132)
-    # im2 = ax2.pcolormesh(X_1D_grid, t_grid, tmp, cmap='YlOrRd')
-    # ax2.axis('off')
-    # ax2.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax2)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im2, cax=cax, orientation='vertical')
-    #
-    # ax3 = fig.add_subplot(133)
-    # im3 = ax3.pcolormesh(X_1D_grid, t_grid, tmp_low_FOM, cmap='YlOrRd')
-    # ax3.axis('off')
-    # ax3.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax3)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im3, cax=cax, orientation='vertical')
-    #
-    # fig.supylabel(r"time $t$")
-    # fig.supxlabel(r"space $x$")
-    # plt.show()
-    # exit()
 
     '''
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du = Update_Control_sPODG(f, omega, lamda, a_primal, as_adj, as_, qs_target, Vs_a,
-                                           J, Vd_p, lhs_p, rhs_p, c_p, delta_s, intIds, weights, max_Armijo_iter=15, wf=wf,
-                                           delta=1e-4, ti_method=tm, red_nl=True, **kwargs)
+    f, J_opt, dL_du, refine = Update_Control_sPODG(f, omega, lamda, a_primal, qs_adj, qs_target,
+                                                   J, Vd_p, lhs_p, rhs_p, c_p, delta_s, intIds, weights,
+                                                   max_Armijo_iter=15, wf=wf,
+                                                   delta=1e-4, ti_method=tm, **kwargs)
 
-    dL_du_list.append(dL_du)
+    # Save for plotting
     J_opt_list.append(J_opt)
+    dL_du_list.append(dL_du)
+    dL_du_ratio_list.append(dL_du / dL_du_list[0])
+
+    '''
+     Basis refinement
+    '''
+    if J_opt_list[opt_step] >= J_opt_list[opt_step - 1]:
+        refine = True
+
+
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     if verbose: print(
@@ -297,14 +197,16 @@ for opt_step in range(max_opt_steps):
         if verbose: print("\n\n-------------------------------")
         if verbose: print(
             f"WARNING... maximal number of steps reached, "
-            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
+            f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
     elif dL_du / dL_du_list[0] < dL_du_min:
         if verbose: print("\n\n-------------------------------")
         if verbose: print(
             f"Optimization converged with, "
-            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
+            f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
 
@@ -319,15 +221,6 @@ for i in range(f.shape[1]):
     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
     qs = qs.at[:, i].set(V_delta @ as_online[:, i])
 
-as_adj_online = as_adj[:Nm_adjoint]
-qs_adj = jnp.zeros_like(qs_target)
-for i in range(f.shape[1]):
-    z = jnp.asarray([delta_online[i]])
-    Vd = jnp.zeros_like(Vs_a)
-    for col in range(Vs_a.shape[1]):
-        Vd = Vd.at[:, col].set(jnp.interp(wf.X + z, wf.X, Vs_a[:, col], period=wf.X[-1]))
-    qs_adj = qs_adj.at[:, i].set(Vd @ as_adj_online[:, i])
-
 f_opt = wf.psi @ f
 
 # %%
@@ -335,6 +228,12 @@ f_opt = wf.psi @ f
 jnp.save(impath + 'qs_opt.npy', qs)
 jnp.save(impath + 'qs_adj_opt.npy', qs_adj)
 jnp.save(impath + 'f_opt.npy', f_opt)
+
+# Save the convergence lists
+np.save(impath + 'J_opt_list.npy', J_opt_list)
+np.save(impath + 'dL_du_ratio_list.npy', dL_du_ratio_list)
+np.save(impath + 'basis_refine_itr_list.npy', basis_refine_itr_list)
+np.save(impath + 'trunc_modes_list.npy', trunc_modes_list)
 
 
 # %%
@@ -355,13 +254,9 @@ if Dimension == "1D":
     pf.plot1D(f_opt, name="f_opt", immpath="./plots/sPODG_1D/")
     pf.plot1D(sigma, name="sigma", immpath="./plots/sPODG_1D/")
 
-    fig1, ax1 = plt.subplots(nrows=1, ncols=1)  # create figure & 1 axis
-    ax1.plot(J_opt_list)
-    fig1.savefig("./plots/sPODG_1D/J.png")  # save the figure to file
-    fig2, ax2 = plt.subplots(nrows=1, ncols=1)  # create figure & 1 axis
-    ax2.plot(dL_du_list)
-    fig2.savefig("./plots/sPODG_1D/dL_du.png")  # save the figure to file
-
+    pf.plot1D_converg(J_opt_list, dL_du_ratio_list,
+                      basis_refine_itr_list, trunc_modes_list,
+                      immpath="./plots/sPODG_1D/")
 
 
 
