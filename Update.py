@@ -4,24 +4,23 @@ from Helper import *
 from memory_profiler import profile
 
 
-def Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J_prev, max_Armijo_iter,
+def Update_Control(f, q0, qs_adj, qs_target, mask, A_p, J_prev, omega, lamda, max_Armijo_iter,
                    wf, delta, ti_method, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
-    mask = wf.psi
 
     for k in range(max_Armijo_iter):
         dL_du = Calc_Grad(lamda, mask, f, qs_adj, **kwargs)
         f_new = f - omega * dL_du
 
         # Solve the primal equation
-        qs = wf.TimeIntegration_primal(q0, f_new, ti_method=ti_method)
+        qs = wf.TimeIntegration_primal(q0, f_new, A_p, mask, ti_method=ti_method)
 
-        if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
+        if np.isnan(qs).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
+        elif np.isnan(qs).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
@@ -32,7 +31,7 @@ def Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J_prev, max_Armijo_it
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
                 return f_opt, J_opt, L2norm(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
+            elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
@@ -56,35 +55,34 @@ def Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J_prev, max_Armijo_it
                         omega = omega / 2
 
 
-def Update_Control_PODG(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, max_Armijo_iter,
-                        wf, delta, ti_method, **kwargs):
+def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p, mask, J_prev, omega, lamda,
+                        max_Armijo_iter, wf, delta, ti_method, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
-    mask = wf.psi
 
-    dL_du = Calc_Grad_PODG(lamda, mask, f, wf.V_adjoint, as_adj, **kwargs)
+    dL_du = Calc_Grad_PODG(lamda, mask, f, V_a, as_adj, **kwargs)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
         # Solve the primal equation
-        as_ = wf.TimeIntegration_primal_PODG(a0_primal, f_new, ti_method)
+        as_ = wf.TimeIntegration_primal_PODG(a0_primal, f_new, Ar_p, psir_p, ti_method)
 
-        if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
+        if np.isnan(as_).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif jnp.isnan(as_).any() and k == max_Armijo_iter - 1:
+        elif np.isnan(as_).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost_PODG(wf.V_primal, as_, qs_target, f_new, lamda, **kwargs)
+            J = Calc_Cost_PODG(V_p, as_, qs_target, f_new, lamda, **kwargs)
             dJ = J_prev - delta * omega * L2norm_ROM(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
                 return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), False
-            elif J >= dJ or jnp.isnan(J):
+            elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
@@ -108,33 +106,33 @@ def Update_Control_PODG(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, m
                         omega = omega / 2
 
 
-def Update_Control_sPODG(f, omega, lamda, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, J_prev, intIds, weights,
-                         max_Armijo_iter, wf, delta, ti_method, red_nl, **kwargs):
+def Update_Control_sPODG(f, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, Vdp, Vda, mask, J_prev, intIds, weights,
+                         omega, lamda, max_Armijo_iter, wf, delta, ti_method, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
-    dL_du = Calc_Grad_sPODG(lamda, wf.psi, f, wf.V_delta_adjoint, intIds, weights, as_adj, **kwargs)
+    dL_du = Calc_Grad_sPODG(lamda, mask, f, Vda, intIds, weights, as_adj, **kwargs)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
         # Solve the primal equation
         as_ = wf.TimeIntegration_primal_sPODG(lhs, rhs, c, a0_primal, f_new, delta_s, ti_method)
 
-        if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
+        if np.isnan(as_).any() and k < max_Armijo_iter - 1:
             print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
             omega = omega / 2
-        elif jnp.isnan(as_).any() and k == max_Armijo_iter - 1:
+        elif np.isnan(as_).any() and k == max_Armijo_iter - 1:
             print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
             exit()
         else:
-            J = Calc_Cost_sPODG(wf.V_delta_primal, as_, qs_target, f_new, lamda, intIds, weights, **kwargs)
+            J = Calc_Cost_sPODG(Vdp, as_, qs_target, f_new, lamda, intIds, weights, **kwargs)
             dJ = J_prev - delta * omega * L2norm_ROM(dL_du, **kwargs) ** 2
             if J < dJ:
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
                 return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
+            elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new

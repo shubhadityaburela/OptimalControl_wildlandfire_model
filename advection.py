@@ -1,10 +1,4 @@
-import jax.lax
-import jax.numpy as jnp
-from jax.config import config
 from memory_profiler import profile
-
-config.update("jax_debug_nans", True)
-jax.config.update("jax_enable_x64", True)
 
 from Coefficient_Matrix import CoefficientMatrix
 import matplotlib
@@ -59,56 +53,27 @@ class advection:
         # Order of accuracy for the derivative matrices of the first and second order
         self.firstderivativeOrder = "5thOrder"
 
-        self.v_x = 0.4 * jnp.ones(self.Nt)
-        self.v_y = jnp.zeros(self.Nt)
+        self.v_x = 0.4 * np.ones(self.Nt)
+        self.v_y = np.zeros(self.Nt)
         self.C = 0.4
 
         self.v_x_target = self.v_x
         self.v_y_target = self.v_y
-        self.v_x_target = self.v_x_target.at[tilt_from:].set(0.9)
-
-        # Sparse matrices of the first and second order
-        self.Mat = None
-        self.Mat_adjoint = None
-        self.Mat_primal = None
-
-        # Offline matrices that are pre-computed for PODG
-        self.C00 = None
-        self.V_primal = None
-        self.V_adjoint = None
-        self.psi = None
-        self.VT_primal_psi = None
-        self.VT_adjoint_psi = None
-        self.A_conv = None
-        self.A_conv_adj = None
-
-        # Offline matrices that are pre-computed for sPODG
-        self.Vs_primal = None
-        self.W_delta_primal = None
-        self.V_delta_primal = None
-        self.A_primal = None
-
-        self.Vs_adjoint = None
-        self.W_delta_adjoint = None
-        self.V_delta_adjoint = None
-        self.A_adjoint = None
-
-        self.T_delta = None
-        self.delta_s = None
+        self.v_x_target[tilt_from:] = 0.9
 
     def Grid(self):
-        self.X = jnp.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
+        self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
         self.dx = self.X[1] - self.X[0]
 
         if self.Neta == 1:
             self.Y = 0
             self.dy = 0
         else:
-            self.Y = jnp.arange(1, self.Neta + 1) * self.Leta / self.Neta
+            self.Y = np.arange(1, self.Neta + 1) * self.Leta / self.Neta
             self.dy = self.Y[1] - self.Y[0]
 
-        dt = (jnp.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / self.C
-        self.t = dt * jnp.arange(self.Nt)
+        dt = (np.sqrt(self.dx ** 2 + self.dy ** 2)) * self.cfl / self.C
+        self.t = dt * np.arange(self.Nt)
         self.dt = self.t[1] - self.t[0]
 
         print('dt = ', dt)
@@ -116,128 +81,64 @@ class advection:
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            q = jnp.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
+            q = np.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
 
-        q = jnp.reshape(q, newshape=self.NN, order="F")
+        q = np.reshape(q, newshape=self.NN, order="F")
 
         return q
 
-    def RHS_primal(self, q, f):
+    def RHS_primal(self, q, f, A, psi):
 
-        Coeff_conv_x = self.v_x[0]
-        Coeff_conv_y = self.v_y[0]
-
-        DT = Coeff_conv_x * self.Mat_primal.Grad_Xi_kron + Coeff_conv_y * self.Mat_primal.Grad_Eta_kron
-        qdot = - DT.dot(q) + self.psi @ f
+        qdot = A.dot(q) + psi @ f
 
         return qdot
 
-    def TimeIntegration_primal(self, q, f0=None, sigma=None, psi=None, ti_method="rk4"):
+    def TimeIntegration_primal(self, q, f0=None, A=None, psi=None, ti_method="rk4"):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
-        self.Mat_primal = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
-                                            Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            qs = jnp.zeros((self.Nxi * self.Neta, self.Nt))
-            qs = qs.at[:, 0].set(q)
+            qs = np.zeros((self.Nxi * self.Neta, self.Nt))
+            qs[:, 0] = q
 
-            @jax.jit
-            def body(n, qs_):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_primal, qs_[:, n - 1], f0[:, n], self.dt)
-                return qs_.at[:, n].set(h)
+            for n in range(1, self.Nt):
+                qs[:, n] = rk4(self.RHS_primal, qs[:, n - 1], f0[:, n], self.dt, A, psi)
 
-            return jax.lax.fori_loop(1, self.Nt, body, qs)
-
-        elif ti_method == "bdf4":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal(x, u)
-
-            return bdf4(f=body, tt=self.t, x0=q, uu=f0.T).T
-
-        elif ti_method == "bdf4_updated":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal(x, u)
-
-            return bdf4_updated(f=body, tt=self.t, x0=q, uu=f0.T).T
-
-        elif ti_method == "implicit_midpoint":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal(x, u)
-
-            return implicit_midpoint(f=body, tt=self.t, x0=q, uu=f0.T).T
+        return qs
 
     def InitialConditions_adjoint(self):
         if self.Neta == 1:
-            q_adj = jnp.zeros_like(self.X)
+            q_adj = np.zeros_like(self.X)
 
-        q_adj = jnp.reshape(q_adj, newshape=self.NN, order="F")
+        q_adj = np.reshape(q_adj, newshape=self.NN, order="F")
 
         return q_adj
 
-    def RHS_adjoint(self, q_adj, f, q, q_tar):
+    def RHS_adjoint(self, q_adj, f, q, q_tar, A):
 
-        Coeff_conv_x = self.v_x[0]
-        Coeff_conv_y = self.v_y[0]
-
-        DT = Coeff_conv_x * self.Mat_adjoint.Grad_Xi_kron + Coeff_conv_y * self.Mat_adjoint.Grad_Eta_kron
-        q_adj_dot = DT.transpose().dot(q_adj) - (q - q_tar)
+        q_adj_dot = - A.dot(q_adj) - (q - q_tar)
 
         return q_adj_dot
 
-    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, ti_method="rk4", dict_args=None):
-        # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
-        # as they are of more general use for a wide variety of problems
-        self.Mat_adjoint = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
-                                             Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
-
+    def TimeIntegration_adjoint(self, q0_adj, f0, qs, qs_target, A, ti_method="rk4", dict_args=None):
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            qs_adj = jnp.zeros((self.Nxi * self.Neta, self.Nt))
-            qs_adj = qs_adj.at[:, -1].set(q0_adj)
+            qs_adj = np.zeros((self.Nxi * self.Neta, self.Nt))
+            qs_adj[:, -1] = q0_adj
 
-            @jax.jit
-            def body(n, qs_adj_):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_adjoint, qs_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
-                        qs[:, -(n + 1)], qs_target[:, -(n + 1)])
-                return qs_adj_.at[:, -(n + 1)].set(h)
+            for n in range(1, self.Nt):
+                qs_adj[:, -(n + 1)] = rk4(self.RHS_adjoint, qs_adj[:, -n], f0[:, -(n + 1)], -self.dt, qs[:, -(n + 1)],
+                                          qs_target[:, -(n + 1)], A)
 
-            return jax.lax.fori_loop(1, self.Nt, body, qs_adj)
+        return qs_adj
 
-        elif ti_method == "bdf4":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args)
 
-            return bdf4(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,), type='backward').T
+    def RHS_primal_target(self, q, f, Mat, v_x, v_y):
 
-        elif ti_method == "bdf4_updated":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args)
-
-            return bdf4_updated(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
-                                type='backward').T
-
-        elif ti_method == "implicit_midpoint":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint(x_ad, u, *args)
-
-            return implicit_midpoint(f=body, tt=self.t, x0=q0_adj, uu=f0.T, func_args=(qs.T, qs_target.T,),
-                                     type='backward').T
-
-    def RHS_primal_target(self, q, f, v_x, v_y):
-
-        DT = v_x * self.Mat_primal.Grad_Xi_kron + v_y * self.Mat_primal.Grad_Eta_kron
+        DT = v_x * Mat.Grad_Xi_kron + v_y * Mat.Grad_Eta_kron
         qdot = - DT.dot(q)
 
         return qdot
@@ -245,128 +146,72 @@ class advection:
     def TimeIntegration_primal_target(self, q, f0=None, sigma=None, psi=None, ti_method="rk4"):
         # Creating the system matrices. The class for the creation of Coefficient matrix is created separately
         # as they are of more general use for a wide variety of problems
-        self.Mat_primal = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
-                                            Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
-
-        # Time loop
-        qs = jnp.zeros((self.Nxi * self.Neta, self.Nt))
-        qs = qs.at[:, 0].set(q)
-
-        @jax.jit
-        def body(n, qs_):
-            # Main Runge-Kutta 4 solver step
-            h = rk4(self.RHS_primal_target, qs_[:, n - 1], f0[:, n], self.dt, self.v_x_target[n],
-                    self.v_y_target[n - 1])
-            return qs_.at[:, n].set(h)
-
-        return jax.lax.fori_loop(1, self.Nt, body, qs)
-
-    ######################################### FOTR POD #############################################
-    def InitialConditions_primal_PODG(self, q0):
-
-        return self.V_primal.transpose() @ q0
-
-    def RHS_primal_PODG(self, a, f):
-
-        return self.A_conv @ a + self.VT_primal_psi @ f
-
-    def TimeIntegration_primal_PODG(self, a, f0, ti_method="rk4"):
-        # Time loop
-        if ti_method == "rk4":
-            # Time loop
-            as_ = jnp.zeros((a.shape[0], self.Nt))
-            as_ = as_.at[:, 0].set(a)
-
-            @jax.jit
-            def body(n, as__):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_primal_PODG, as__[:, n - 1], f0[:, n], self.dt)
-                return as__.at[:, n].set(h)
-
-            return jax.lax.fori_loop(1, self.Nt, body, as_)
-
-        elif ti_method == "bdf4":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal_PODG(x, u)
-
-            return bdf4(f=body, tt=self.t, x0=a, uu=f0.T).T
-
-        elif ti_method == "bdf4_updated":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal_PODG(x, u)
-
-            return bdf4_updated(f=body, tt=self.t, x0=a, uu=f0.T).T
-
-        elif ti_method == "implicit_midpoint":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal_PODG(x, u)
-
-            return implicit_midpoint(f=body, tt=self.t, x0=a, uu=f0.T).T
-
-    def POD_Galerkin_mat_primal(self):
-        # Construct linear operators
         Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
                                 Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
 
-        # Convection matrix (Needs to be changed if the velocity is time dependent)
-        self.C00 = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
-        self.A_conv = (self.V_primal.transpose() @ self.C00) @ self.V_primal
+        # Time loop
+        qs = np.zeros((self.Nxi * self.Neta, self.Nt))
+        qs[:, 0] = q
 
-        # Compute the pre factor for the control
-        self.VT_primal_psi = self.V_primal.transpose() @ self.psi
+        for n in range(1, self.Nt):
+            qs[:, n] = rk4(self.RHS_primal_target, qs[:, n - 1], f0[:, n], self.dt, Mat, self.v_x_target[n],
+                           self.v_y_target[n - 1])
 
-    def InitialConditions_adjoint_PODG(self, q0_adj):
+        return qs
 
-        return self.V_adjoint.transpose() @ q0_adj
+    ######################################### FOTR POD #############################################
+    def InitialConditions_primal_PODG(self, V_p, q0):
 
-    def RHS_adjoint_PODG(self, a_adj, f, a, q_target):
+        return V_p.transpose() @ q0
 
-        return - (self.A_conv_adj @ a_adj + self.V_adjoint.transpose() @ (self.V_primal @ a - q_target))
+    def RHS_primal_PODG(self, a, f, Ar_p, psir_p):
 
-    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, qs_target, ti_method="rk4"):
+        return Ar_p @ a + psir_p @ f
+
+    def TimeIntegration_primal_PODG(self, a, f0, Ar_p, psir_p, ti_method="rk4"):
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            as_adj = jnp.zeros((at_adj.shape[0], self.Nt))
-            as_adj = as_adj.at[:, -1].set(at_adj)
+            as_ = np.zeros((a.shape[0], self.Nt))
+            as_[:, 0] = a
 
-            @jax.jit
-            def body(n, as_adj_):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_adjoint_PODG, as_adj_[:, -n], f0[:, -(n + 1)], -self.dt,
-                        as_[:, -(n + 1)], qs_target[:, -(n + 1)])
-                return as_adj_.at[:, -(n + 1)].set(h)
+            for n in range(1, self.Nt):
+                as_[:, n] = rk4(self.RHS_primal_PODG, as_[:, n - 1], f0[:, n], self.dt, Ar_p, psir_p)
 
-            return jax.lax.fori_loop(1, self.Nt, body, as_adj)
+        return as_
 
-        elif ti_method == "bdf4":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint_PODG(x_ad, u, *args)
+    def POD_Galerkin_mat_primal(self, A_p, V_p, psi):
 
-            return bdf4(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,), type='backward').T
+        V_pT = V_p.transpose()
 
-        elif ti_method == "bdf4_updated":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint_PODG(x_ad, u, *args)
+        return (V_pT @ A_p) @ V_p, V_pT @ psi
 
-            return bdf4_updated(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,),
-                                type='backward').T
+    def InitialConditions_adjoint_PODG(self, V_a, q0_adj):
 
-        elif ti_method == "implicit_midpoint":
-            @jax.jit
-            def body(x_ad, u, *args):
-                return self.RHS_adjoint_PODG(x_ad, u, *args)
+        return V_a.transpose() @ q0_adj
 
-            return implicit_midpoint(f=body, tt=self.t, x0=at_adj, uu=f0.T, func_args=(as_.T, qs_target.T,),
-                                     type='backward').T
+    def RHS_adjoint_PODG(self, a_adj, f, a, q_target, Ar_a, V_a, V_p):
 
-    def POD_Galerkin_mat_adjoint(self):
-        self.A_conv_adj = (self.V_adjoint.transpose() @ self.C00.transpose()) @ self.V_adjoint
+        return - (Ar_a @ a_adj + V_a.transpose() @ (V_p @ a - q_target))
+
+    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, qs_target, Ar_a, V_a, V_p, ti_method="rk4"):
+        # Time loop
+        if ti_method == "rk4":
+            # Time loop
+            as_adj = np.zeros((at_adj.shape[0], self.Nt))
+            as_adj[:, -1] = at_adj
+
+            for n in range(1, self.Nt):
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_PODG, as_adj[:, -n], f0[:, -(n + 1)], -self.dt,
+                                          as_[:, -(n + 1)],
+                                          qs_target[:, -(n + 1)],
+                                          Ar_a, V_a, V_p)
+
+            return as_adj
+
+
+    def POD_Galerkin_mat_adjoint(self, V_a, A_p):
+        return (V_a.transpose() @ A_p.transpose()) @ V_a
 
     ######################################### FOTR sPOD #############################################
     def InitialConditions_primal_sPODG(self, q0, ds, Vd):
@@ -375,29 +220,23 @@ class advection:
         V = weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]
         a = V.transpose() @ q0
         # Initialize the shifts with zero for online phase
-        a = jnp.concatenate((a, jnp.asarray([z])))
+        a = np.concatenate((a, np.asarray([z])))
 
         return a
 
-    def sPOD_Galerkin_mat_primal(self, T_delta, samples):
-        # Construct linear operators
-        Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
-                                Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
-
-        # Convection matrix (Needs to be changed if the velocity is time dependent)
-        self.A_primal = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
+    def sPOD_Galerkin_mat_primal(self, T_delta, V_p, A_p, psi, samples):
 
         # Construct V_delta and W_delta matrix
-        V_delta_primal, W_delta_primal = make_V_W_delta(self.Vs_primal, T_delta, self.X, samples)
+        V_delta_primal, W_delta_primal = make_V_W_delta(V_p, T_delta, self.X, samples)
 
         # Construct LHS matrix
         LHS_matrix = make_LHS_mat_offline_primal(V_delta_primal, W_delta_primal)
 
         # Construct RHS matrix
-        RHS_matrix = make_RHS_mat_offline_primal(V_delta_primal, W_delta_primal, self.A_primal)
+        RHS_matrix = make_RHS_mat_offline_primal(V_delta_primal, W_delta_primal, A_p)
 
         # Construct the control matrix
-        C_matrix = make_control_mat_offline_primal(V_delta_primal, W_delta_primal, self.psi)
+        C_matrix = make_control_mat_offline_primal(V_delta_primal, W_delta_primal, psi)
 
         return V_delta_primal, W_delta_primal, LHS_matrix, RHS_matrix, C_matrix
 
@@ -418,68 +257,41 @@ class advection:
         # Prepare the online control matrix
         C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
 
-        return jnp.linalg.inv(M) @ (A @ a + C)
+        return np.linalg.inv(M) @ (A @ a + C)
 
     def TimeIntegration_primal_sPODG(self, lhs, rhs, c, a, f0, delta_s, ti_method="rk4"):
         if ti_method == "rk4":
             # Time loop
-            as_ = jnp.zeros((a.shape[0], self.Nt))
-            as_ = as_.at[:, 0].set(a)
+            as_ = np.zeros((a.shape[0], self.Nt))
+            as_[:, 0] = a
 
-            @jax.jit
-            def body(n, as__):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_primal_sPODG, as__[:, n - 1], f0[:, n], self.dt, lhs, rhs, c, delta_s)
-                return as__.at[:, n].set(h)
+            for n in range(1, self.Nt):
+                as_[:, n] = rk4(self.RHS_primal_sPODG, as_[:, n - 1], f0[:, n], self.dt, lhs, rhs, c, delta_s)
 
-            return jax.lax.fori_loop(1, self.Nt, body, as_)
+            return as_
 
-        elif ti_method == "bdf4":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal_sPODG(x, u, lhs, rhs, c, delta_s)
-
-            return bdf4(f=body, tt=self.t, x0=a, uu=f0.T).T
-
-        elif ti_method == "bdf4_updated":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal_sPODG(x, u, lhs, rhs, c, delta_s)
-
-            return bdf4_updated(f=body, tt=self.t, x0=a, uu=f0.T).T
-
-        elif ti_method == "implicit_midpoint":
-            @jax.jit
-            def body(x, u):
-                return self.RHS_primal_sPODG(x, u, lhs, rhs, c, delta_s)
-
-            return implicit_midpoint(f=body, tt=self.t, x0=a, uu=f0.T).T
 
     def InitialConditions_adjoint_sPODG(self, Nm_adjoint, a_):
         # Initialize the shift adjoint with zero for online phase
-        a = jnp.concatenate((jnp.zeros(Nm_adjoint), jnp.asarray([a_[-1, -1]])))
+        a = np.concatenate((np.zeros(Nm_adjoint), np.asarray([a_[-1, -1]])))
 
         return a
 
-    def sPOD_Galerkin_mat_adjoint(self, qs_target, Vd_p, T_delta, samples):
-        # Convection matrix (Needs to be changed if the velocity is time dependent)
-        self.A_adjoint = - self.A_primal.transpose()
+    def sPOD_Galerkin_mat_adjoint(self, T_delta, V_a, A_a, samples):
 
         # Construct V_delta and W_delta matrix
-        V_delta_adjoint, W_delta_adjoint = make_V_W_delta(self.Vs_adjoint, T_delta, self.X, samples)
+        V_delta_adjoint, W_delta_adjoint = make_V_W_delta(V_a, T_delta, self.X, samples)
 
         # Construct LHS matrix
         LHS_matrix = make_LHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint)
 
         # Construct RHS matrix
-        RHS_matrix = make_RHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint, self.A_adjoint)
+        RHS_matrix = make_RHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint, -A_a)
 
-        # Construct the Target term matrices for the adjoint equation
-        # T1, T2 = make_target_term_matrices(Vd_p, V_delta_adjoint, W_delta_adjoint, qs_target)
 
         return V_delta_adjoint, W_delta_adjoint, LHS_matrix, RHS_matrix
 
-    def RHS_adjoint_sPODG(self, a, f, a_, lhs, rhs, Vdp, Vda, Wda, qs_target, ds, n):
+    def RHS_adjoint_sPODG(self, a, f, a_, lhs, rhs, Vdp, Vda, Wda, qs_target, ds):
 
         # Compute the interpolation weight and the interval in which the shift lies
         intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a_[-1])
@@ -496,274 +308,18 @@ class advection:
         # Prepare the online control matrix
         C = make_target_mat_online_primal(Vdp, Vda, Wda, qs_target, a_[:-1], Da, intervalIdx, weight)
 
-        return jnp.linalg.inv(M) @ (A @ a - C)
+        return np.linalg.inv(M) @ (A @ a - C)
 
     def TimeIntegration_adjoint_sPODG(self, lhs, rhs, Vdp, Vda, Wda, qs_target, at_adj, f0, as_, delta_s, ti_method="rk4"):
         # Time loop
         if ti_method == "rk4":
             # Time loop
-            as_adj = jnp.zeros((at_adj.shape[0], self.Nt))
-            as_adj = as_adj.at[:, -1].set(at_adj)
+            as_adj = np.zeros((at_adj.shape[0], self.Nt))
+            as_adj[:, -1] = at_adj
 
-            @jax.jit
-            def body(n, as_adj_):
-                # Main Runge-Kutta 4 solver step
-                h = rk4(self.RHS_adjoint_sPODG, as_adj_[:, -n], f0[:, -(n + 1)], -self.dt, as_[:, -(n + 1)], lhs, rhs,
-                        Vdp, Vda, Wda, qs_target[:, -(n + 1)], delta_s, n)
-                return as_adj_.at[:, -(n + 1)].set(h)
+            for n in range(1, self.Nt):
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -(n + 1)],
+                                          -self.dt, as_[:, -(n + 1)], lhs, rhs, Vdp, Vda, Wda,
+                                          qs_target[:, -(n + 1)], delta_s)
 
-            return jax.lax.fori_loop(1, self.Nt, body, as_adj)
-
-
-def sPOD_Galerkin_mat_primal(Vs_primal, psi, delta_s, wf, samples):
-    # Construct linear operators
-    Mat = CoefficientMatrix(orderDerivative=wf.firstderivativeOrder, Nxi=wf.Nxi,
-                            Neta=wf.Neta, periodicity='Periodic', dx=wf.dx, dy=wf.dy)
-
-    # Convection matrix (Needs to be changed if the velocity is time dependent)
-    A_primal = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
-
-    # Construct V_delta and W_delta matrix
-    V_delta_primal, W_delta_primal = make_V_W_delta_fast(Vs_primal, delta_s, wf.X, samples)
-
-    # Construct LHS matrix
-    LHS_matrix = make_LHS_mat_offline_primal(V_delta_primal, W_delta_primal)
-
-    # Construct RHS matrix
-    RHS_matrix = make_RHS_mat_offline_primal(V_delta_primal, W_delta_primal, A_primal)
-
-    # Construct the control matrix
-    C_matrix = make_control_mat_offline_primal(V_delta_primal, W_delta_primal, psi)
-
-    return V_delta_primal, W_delta_primal, LHS_matrix, RHS_matrix, C_matrix
-
-
-def InitialConditions_primal_sPODG(q0, Vd, delta_s):
-    z = 0
-    intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(delta_s[2], z)
-    V = weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]
-    a = V.transpose() @ q0
-    # Initialize the shifts with zero for online phase
-    a = jnp.concatenate((a, jnp.asarray([z])))
-
-    return a
-
-
-def RHS_primal_sPODG(a, f, lhs, rhs, c, delta_s):
-    # Compute the interpolation weight and the interval in which the shift lies
-    intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(delta_s[2], -a[-1])
-
-    # Assemble the dynamic matrix D(a)
-    Da = make_Da(a)
-
-    # Prepare the LHS side of the matrix using D(a)
-    M = make_LHS_mat_online_primal(lhs, Da, intervalIdx, weight)
-
-    # Prepare the RHS side of the matrix using D(a)
-    A = make_RHS_mat_online_primal(rhs, Da, intervalIdx, weight)
-
-    # Prepare the online control matrix
-    C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
-
-    return jnp.linalg.inv(M) @ (A @ a + C)
-
-
-def TimeIntegration_primal_sPODG(lhs, rhs, c, delta_s, a, f0, wf, ti_method="rk4"):
-    if ti_method == "rk4":
-        # Time loop
-        as_ = jnp.zeros((a.shape[0], wf.Nt))
-        as_ = as_.at[:, 0].set(a)
-
-        @jax.jit
-        def body(n, as__):
-            # Main Runge-Kutta 4 solver step
-            h = rk4(RHS_primal_sPODG, as__[:, n - 1], f0[:, n], wf.dt, lhs, rhs, c, delta_s)
-            return as__.at[:, n].set(h)
-
-        return jax.lax.fori_loop(1, wf.Nt, body, as_)
-
-
-def sPOD_Galerkin_mat_adjoint(delta_s, Vs_adjoint, wf, samples):
-    # Convection matrix (Needs to be changed if the velocity is time dependent)
-    Mat = CoefficientMatrix(orderDerivative=wf.firstderivativeOrder, Nxi=wf.Nxi,
-                            Neta=wf.Neta, periodicity='Periodic', dx=wf.dx, dy=wf.dy)
-
-    # Convection matrix (Needs to be changed if the velocity is time dependent)
-    A = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
-    A_adjoint = - A.transpose()
-
-    # Construct V_delta and W_delta matrix
-    V_delta_adjoint, W_delta_adjoint = make_V_W_delta_fast(Vs_adjoint, delta_s, wf.X, samples)
-
-    # Construct LHS matrix
-    LHS_matrix = make_LHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint)
-
-    # Construct RHS matrix
-    RHS_matrix = make_RHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint, A_adjoint)
-
-    return V_delta_adjoint, W_delta_adjoint, LHS_matrix, RHS_matrix
-
-
-def InitialConditions_adjoint_sPODG(q0_adj, Vd, delta_s, a_):
-    z = a_[-1, -1]
-    intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(delta_s[2], -z)
-    V = weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]
-    a = V.transpose() @ q0_adj
-    a = jnp.concatenate((a, jnp.asarray([z])))
-
-    return a
-
-
-def RHS_adjoint_sPODG(a, f, a_, q_target, lhs, rhs, delta_s, Vdp, Vda, Wda):
-    # Compute the interpolation weight and the interval in which the shift lies
-    intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(delta_s[2], -a_[-1])
-
-    # Assemble the dynamic matrix D(a)
-    Da = make_Da(a)
-
-    # Prepare the LHS side of the matrix using D(a)
-    M = make_LHS_mat_online_primal(lhs, Da, intervalIdx, weight)
-
-    # Prepare the RHS side of the matrix using D(a)
-    A = make_RHS_mat_online_primal(rhs, Da, intervalIdx, weight)
-
-    # Prepare the online control matrix
-    C = make_target_mat_online_primal(Vdp, Vda, Wda, a_[:-1], q_target, Da, intervalIdx, weight)
-
-    return jnp.linalg.inv(M) @ (A @ a - C)
-
-
-def TimeIntegration_adjoint_sPODG(lhs, rhs, at_adj, f0, as_, qs_target, delta_s, Vdp, Vda, Wda, wf,
-                                  ti_method="rk4"):
-    # Time loop
-    if ti_method == "rk4":
-        # Time loop
-        as_adj = jnp.zeros((at_adj.shape[0], wf.Nt))
-        as_adj = as_adj.at[:, -1].set(at_adj)
-
-        @jax.jit
-        def body(n, as_adj_):
-            # Main Runge-Kutta 4 solver step
-            h = rk4(RHS_adjoint_sPODG, as_adj_[:, -n], f0[:, -(n + 1)], -wf.dt, as_[:, -(n + 1)],
-                    qs_target[:, -(n + 1)], lhs, rhs, delta_s, Vdp, Vda, Wda)
-            return as_adj_.at[:, -(n + 1)].set(h)
-
-        return jax.lax.fori_loop(1, wf.Nt, body, as_adj)
-
-    # def InitialConditions_primal_sPODG_tmp(self, q0):
-    #     a = jnp.linalg.inv(self.Vs_primal.transpose() @ self.Vs_primal) @ (self.Vs_primal.transpose() @ q0)
-    #     # Initialize the shifts with zero for online phase
-    #     a = jnp.concatenate((a, jnp.asarray([0, 0])))
-    #
-    #     return a
-    # def sPOD_Galerkin_mat_primal_tmp(self, samples):
-    #     # Construct linear operators
-    #     Mat = CoefficientMatrix(orderDerivative=self.firstderivativeOrder, Nxi=self.Nxi,
-    #                             Neta=self.Neta, periodicity='Periodic', dx=self.dx, dy=self.dy)
-    #
-    #     # Convection matrix (Needs to be changed if the velocity is time dependent)
-    #     self.A_primal = - (self.v_x[0] * Mat.Grad_Xi_kron + self.v_y[0] * Mat.Grad_Eta_kron)
-    #
-    #     # Generate the shift samples
-    #     self.delta_s = subsample(self.X, num_sample=samples)
-    #
-    #     # Extract transformation operators based on sub-sampled delta
-    #     self.T_delta, _ = get_T(self.delta_s, self.X, self.t)
-    #
-    #     # Construct V_delta and W_delta matrix
-    #     self.V_delta_primal, self.W_delta_primal = make_V_W_delta(self.Vs_primal, self.T_delta, self.X, samples)
-    #
-    #     # Construct LHS matrix
-    #     LHS_matrix = make_LHS_mat_offline_primal(self.V_delta_primal, self.W_delta_primal)
-    #
-    #     # Construct RHS matrix
-    #     RHS_matrix = make_RHS_mat_offline_primal(self.V_delta_primal, self.W_delta_primal, self.A_primal)
-    #
-    #     # Construct the control matrix
-    #     C_matrix = make_control_mat_offline_primal(self.V_delta_primal, self.W_delta_primal, self.psi)
-    #
-    #     return LHS_matrix, RHS_matrix, C_matrix
-    # def RHS_primal_sPODG_tmp(self, a, f, lhs, rhs, c):
-    #
-    #     # Compute the interpolation weight and the interval in which the shift lies
-    #     intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(self.delta_s[2], a[-1])
-    #
-    #     # Assemble the dynamic matrix D(a)
-    #     Da = make_Da(a)
-    #
-    #     # Prepare the LHS side of the matrix using D(a)
-    #     M = make_LHS_mat_online_primal(lhs, Da, intervalIdx, weight)
-    #
-    #     # Prepare the RHS side of the matrix using D(a)
-    #     A = make_RHS_mat_online_primal(rhs, Da, intervalIdx, weight)
-    #
-    #     # Prepare the online control matrix
-    #     C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
-    #
-    #     return jnp.linalg.inv(M) @ (A @ a + C)
-    # def TimeIntegration_primal_sPODG_tmp(self, lhs, rhs, c, a, f0, ti_method="rk4"):
-    #     if ti_method == "rk4":
-    #         # Time loop
-    #         as_ = jnp.zeros((a.shape[0], self.Nt))
-    #         as_ = as_.at[:, 0].set(a)
-    #
-    #         @jax.jit
-    #         def body(n, as__):
-    #             # Main Runge-Kutta 4 solver step
-    #             h, r = rk4_sp(self.RHS_primal_sPODG_tmp, as__[:-1, n - 1], f0[:, n], self.dt, lhs, rhs, c)
-    #             as__ = as__.at[:-1, n].set(h)
-    #             as__ = as__.at[-1, n].set(r[-1])
-    #             return as__
-    #
-    #         return jax.lax.fori_loop(1, self.Nt, body, as_)
-    # def InitialConditions_adjoint_sPODG_tmp(self, q0_adj):
-    #     a = jnp.linalg.inv(self.Vs_adjoint.transpose() @ self.Vs_adjoint) @ (self.Vs_adjoint.transpose() @ q0_adj)
-    #     return a
-    # def sPOD_Galerkin_mat_adjoint_tmp(self, samples):
-    #     # Convection matrix (Needs to be changed if the velocity is time dependent)
-    #     self.A_adjoint = - self.A_primal.transpose()
-    #
-    #     # Construct V_delta and W_delta matrix
-    #     self.V_delta_adjoint, self.W_delta_adjoint = make_V_W_delta(self.Vs_adjoint, self.T_delta, self.X, samples)
-    #
-    #     # Construct LHS matrix
-    #     LHS_matrix = make_LHS_mat_offline_adjoint_tmp(self.V_delta_adjoint, self.W_delta_adjoint)
-    #
-    #     # Construct RHS matrix
-    #     RHS_matrix = make_RHS_mat_offline_adjoint_tmp(self.V_delta_adjoint, self.A_adjoint)
-    #
-    #     return LHS_matrix, RHS_matrix
-    # def RHS_adjoint_sPODG_tmp(self, a, f, a_, q_target, lhs, rhs):
-    #
-    #     # Compute the interpolation weight and the interval in which the shift lies
-    #     intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(self.delta_s[2], a_[-2])
-    #
-    #     # Assemble the dynamic matrix D(a)
-    #     Da = make_Da_tmp(a)
-    #
-    #     # Prepare the LHS side of the matrix using D(a)
-    #     M11, M12 = make_LHS_mat_online_adjoint_tmp(lhs, Da, intervalIdx, weight)
-    #
-    #     # Prepare the RHS side of the matrix using D(a)
-    #     A11 = make_RHS_mat_online_adjoint_tmp(rhs, intervalIdx, weight)
-    #
-    #     # Prepare the online control matrix
-    #     C1 = make_target_mat_online_adjoint_tmp(self.V_delta_primal, self.V_delta_adjoint, a_[:-2], q_target,
-    #                                             intervalIdx, weight)
-    #
-    #     return jnp.linalg.inv(M11) @ (-M12 @ a_[-1][jnp.newaxis] + A11 @ a - C1)
-    # def TimeIntegration_adjoint_sPODG_tmp(self, lhs, rhs, at_adj, f0, as_, qs_target, ti_method="rk4"):
-    #     # Time loop
-    #     if ti_method == "rk4":
-    #         # Time loop
-    #         as_adj = jnp.zeros((at_adj.shape[0], self.Nt))
-    #         as_adj = as_adj.at[:, -1].set(at_adj)
-    #
-    #         @jax.jit
-    #         def body(n, as_adj_):
-    #             # Main Runge-Kutta 4 solver step
-    #             h = rk4(self.RHS_adjoint_sPODG_tmp, as_adj_[:, -n], f0[:, -(n + 1)], -self.dt, as_[:, -(n + 1)],
-    #                     qs_target[:, -(n + 1)], lhs, rhs)
-    #             return as_adj_.at[:, -(n + 1)].set(h)
-    #
-    #         return jax.lax.fori_loop(1, self.Nt, body, as_adj)
+            return as_adj

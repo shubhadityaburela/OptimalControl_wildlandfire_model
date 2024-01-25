@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib
-import jax.numpy as jnp
 
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt

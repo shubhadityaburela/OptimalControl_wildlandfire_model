@@ -21,12 +21,12 @@ def tensor_mat_prod(T, M):
 
 def L2norm(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
+    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
 
 
 def L2norm_ROM(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dt'))
+    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dt'))
 
 
 # BDF4 helper functions
@@ -83,6 +83,7 @@ def scipy_root(f, Df=None):
     return solver
 
 
+# Other Helper functions
 def Calc_target_val(qs, wf, kind='exp_decay', **kwargs):
     NN = kwargs.get('Nx') * kwargs.get('Ny')
 

@@ -17,10 +17,10 @@ def Calc_Cost_PODG(V, as_, qs_target, f, lamda, **kwargs):
 
 
 def Calc_Cost_sPODG(V, as_, qs_target, f, lamda, intIds, weights, **kwargs):
-    q = jnp.zeros_like(qs_target)
+    q = np.zeros_like(qs_target)
     for i in range(f.shape[1]):
         V_delta = weights[i] * V[intIds[i]] + (1 - weights[i]) * V[intIds[i] + 1]
-        q = q.at[:, i].set(V_delta @ as_[:-1, i])
+        q[:, i] = V_delta @ as_[:-1, i]
 
     q_res = q - qs_target
 

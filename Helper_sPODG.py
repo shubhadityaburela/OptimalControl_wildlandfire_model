@@ -1,11 +1,7 @@
 import numpy as np
 from sklearn.utils.extmath import randomized_svd
 from scipy import interpolate
-from jax import jit, jacobian
-from jax.scipy.optimize import minimize
 from scipy.optimize import root
-import jax.numpy as jnp
-import jax
 
 import sys
 import os
@@ -91,23 +87,22 @@ def srPCA_1D(q, delta, X, t, spod_iter):
 
     qframes = [qframes[0].build_field()]
 
-    return qtilde, modes_list[0], jnp.array(V[0]), qframes[0]
+    return qtilde, modes_list[0], V[0], qframes[0]
 
 
 # Offline phase general functions for primal system
 def central_FDMatrix(order, Nx, dx):
     from scipy.sparse import spdiags
-    from jax.experimental import sparse
 
     # column vectors of all ones
-    enm2 = jnp.ones(Nx - 2)
-    enm4 = jnp.ones(Nx - 4)
-    enm6 = jnp.ones(Nx - 6)
+    enm2 = np.ones(Nx - 2)
+    enm4 = np.ones(Nx - 4)
+    enm6 = np.ones(Nx - 6)
 
     # column vectors of all zeros
-    z4 = jnp.zeros(4)
-    z6 = jnp.zeros(6)
-    znm2 = jnp.zeros_like(enm2)
+    z4 = np.zeros(4)
+    z6 = np.zeros(6)
+    znm2 = np.zeros_like(enm2)
 
     # determine the diagonal entries 'diagonals_D' and the corresponding
     # diagonal indices 'indices' based on the specified order
@@ -116,19 +111,19 @@ def central_FDMatrix(order, Nx, dx):
     elif order == 4:
         pass
     elif order == 6:
-        diag3 = jnp.hstack([-enm6, z6])
-        diag2 = jnp.hstack([5, 9 * enm6, 5, z4])
-        diag1 = jnp.hstack([-30, -40, -45 * enm6, -40, -30, -60, 0])
-        diag0 = jnp.hstack([-60, znm2, 60])
-        diagonals_D = (1 / 60) * jnp.array([diag3, diag2, diag1, diag0,
-                                            -jnp.flipud(diag1), -jnp.flipud(diag2), -jnp.flipud(diag3)])
+        diag3 = np.hstack([-enm6, z6])
+        diag2 = np.hstack([5, 9*enm6, 5, z4])
+        diag1 = np.hstack([-30, -40, -45*enm6, -40, -30, -60, 0])
+        diag0 = np.hstack([-60, znm2, 60])
+        diagonals_D = (1 / 60) * np.array([diag3, diag2, diag1, diag0,
+                                           -np.flipud(diag1), -np.flipud(diag2), -np.flipud(diag3)])
         indices = [-3, -2, -1, 0, 1, 2, 3]
     else:
         print("Order of accuracy %i is not supported.", order)
         exit()
 
     # assemble the output matrix
-    D = sparse.BCOO.fromdense(spdiags(diagonals_D, indices, format="csr").todense())
+    D = spdiags(diagonals_D, indices, format="csr")
 
     return D * (1 / dx)
 
@@ -137,13 +132,13 @@ def subsample(X, num_sample):
     active_subspace_factor = -1
 
     # sampling points for the shifts (The shift values can range from 0 to X/2 and then is a mirror image for X/2 to X)
-    delta_samples = jnp.linspace(0, X[-1], num_sample)
+    delta_samples = np.linspace(0, X[-1], num_sample)
 
     delta_sampled = [active_subspace_factor * delta_samples,
-                     jnp.zeros_like(delta_samples),
+                     np.zeros_like(delta_samples),
                      delta_samples]
 
-    return jnp.array(delta_sampled)
+    return np.array(delta_sampled)
 
 
 def get_T(delta_s, X, t):
@@ -179,7 +174,7 @@ def make_V_W_delta(U, T_delta, X, num_sample):
         W11 = D @ (T_delta[it] @ U)
         W_delta.append(W11)
 
-    return jnp.array(V_delta), jnp.array(W_delta)
+    return V_delta, W_delta
 
 
 def make_LHS_mat_offline_primal(V_delta, W_delta):
@@ -193,7 +188,7 @@ def make_LHS_mat_offline_primal(V_delta, W_delta):
 
         LHS_mat.append([LHS11, LHS12, LHS22])
 
-    return jnp.array(LHS_mat)
+    return LHS_mat
 
 
 def make_RHS_mat_offline_primal(V_delta, W_delta, A):
@@ -205,7 +200,7 @@ def make_RHS_mat_offline_primal(V_delta, W_delta, A):
 
         RHS_mat.append([A_1, A_2])
 
-    return jnp.array(RHS_mat)
+    return RHS_mat
 
 
 def make_control_mat_offline_primal(V_delta, W_delta, psi):
@@ -217,7 +212,7 @@ def make_control_mat_offline_primal(V_delta, W_delta, psi):
 
         C_mat.append([C_1, C_2])
 
-    return jnp.array(C_mat)
+    return C_mat
 
 
 def make_target_term_matrices(Vd_p, Vd_a, Wd_a, qs_target):
@@ -232,7 +227,7 @@ def make_target_term_matrices(Vd_p, Vd_a, Wd_a, qs_target):
         T1.append([T_11, T_21])
         T2.append([T_12, T_22])
 
-    return jnp.array(T1), jnp.array(T2)
+    return T1, T2
 
 
 def make_control_update_mat(V_delta, W_delta, psi):
@@ -244,18 +239,18 @@ def make_control_update_mat(V_delta, W_delta, psi):
 
         Ct_mat.append([Ct_1, Ct_2])
 
-    return jnp.array(Ct_mat)
+    return Ct_mat
 
 
 # Online phase functions
 def findIntervalAndGiveInterpolationWeight_1D(xPoints, xStar):
-    intervalBool_arr = jnp.where(xStar >= xPoints, 1, 0)
+    intervalBool_arr = np.where(xStar >= xPoints, 1, 0)
     mixed = intervalBool_arr[:-1] * (1 - intervalBool_arr)[1:]
-    index = jnp.sum(mixed * jnp.arange(0, mixed.shape[0]))
+    index = np.sum(mixed * np.arange(0, mixed.shape[0]))
 
     intervalIdx = index
-    alpha = (xPoints.at[intervalIdx + 1].get() - xStar) / (
-            xPoints.at[intervalIdx + 1].get() - xPoints.at[intervalIdx].get())
+    alpha = (xPoints[intervalIdx + 1] - xStar) / (
+            xPoints[intervalIdx + 1] - xPoints[intervalIdx])
 
     return intervalIdx, alpha
 
@@ -268,12 +263,12 @@ def make_Da(a):
 
 def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
     M11 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
-    M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da[:, jnp.newaxis]
+    M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da[:, np.newaxis]
     M21 = M12.transpose()
-    M22 = (Da[:, jnp.newaxis].transpose() @ (weight * LHS_matrix[intervalIdx][2] +
-                                             (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da[:, jnp.newaxis]
-    M22_reg = jnp.where(M22 == 0, M22 + 1e-12, M22)
-    M = jnp.block([
+    M22 = (Da[:, np.newaxis].transpose() @ (weight * LHS_matrix[intervalIdx][2] +
+                                             (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da[:, np.newaxis]
+    M22_reg = np.where(M22 == 0, M22 + 1e-12, M22)
+    M = np.block([
         [M11, M12],
         [M21, M22_reg]
     ])
@@ -283,11 +278,11 @@ def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
 
 def make_RHS_mat_online_primal(RHS_matrix, Da, intervalIdx, weight):
     A11 = weight * RHS_matrix[intervalIdx][0] + (1 - weight) * RHS_matrix[intervalIdx + 1][0]
-    A21 = Da[:, jnp.newaxis].transpose() @ (weight * RHS_matrix[intervalIdx][1] +
+    A21 = Da[:, np.newaxis].transpose() @ (weight * RHS_matrix[intervalIdx][1] +
                                             (1 - weight) * RHS_matrix[intervalIdx + 1][1])
-    A = jnp.block([
-        [A11, jnp.zeros((A11.shape[0], 1))],
-        [A21, jnp.zeros((A21.shape[0], 1))]
+    A = np.block([
+        [A11, np.zeros((A11.shape[0], 1))],
+        [A21, np.zeros((A21.shape[0], 1))]
     ])
 
     return A
@@ -295,26 +290,20 @@ def make_RHS_mat_online_primal(RHS_matrix, Da, intervalIdx, weight):
 
 def make_control_mat_online_primal(f, C, Da, intervalIdx, weight):
     C1 = (weight * C[intervalIdx][0] + (1 - weight) * C[intervalIdx + 1][0]) @ f
-    C2 = Da[:, jnp.newaxis].transpose() @ ((weight * C[intervalIdx][1] + (1 - weight) * C[intervalIdx + 1][1]) @ f)
+    C2 = Da[:, np.newaxis].transpose() @ ((weight * C[intervalIdx][1] + (1 - weight) * C[intervalIdx + 1][1]) @ f)
 
-    C = jnp.concatenate((C1, C2))
+    C = np.concatenate((C1, C2))
 
     return C
 
 
 def make_target_mat_online_primal(Vdp, Vda, Wda, qs_target, a_, Da, intervalIdx, weight):
-    # T_11 = (weight * T1[intervalIdx][0] + (1 - weight) * T1[intervalIdx + 1][0])
-    # T_12 = (weight * T2[intervalIdx][0][:, n] + (1 - weight) * T2[intervalIdx + 1][0][:, n])
-    # T_21 = (weight * T1[intervalIdx][1] + (1 - weight) * T1[intervalIdx + 1][1])
-    # T_22 = (weight * T2[intervalIdx][1][:, n] + (1 - weight) * T2[intervalIdx + 1][1][:, n])
-    # C1 = (T_11 @ a_ - T_12)
-    # C2 = Da[:, jnp.newaxis].transpose() @ (T_21 @ a_ - T_22)
 
     V_p = (weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1])
     C1 = (weight * Vda[intervalIdx] + (1 - weight) * Vda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
-    C2 = Da[:, jnp.newaxis].transpose() @ (weight * Wda[intervalIdx] + (1 - weight) * Wda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
+    C2 = Da[:, np.newaxis].transpose() @ (weight * Wda[intervalIdx] + (1 - weight) * Wda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
 
-    C = jnp.concatenate((C1, C2))
+    C = np.concatenate((C1, C2))
 
     return C
 
@@ -322,7 +311,7 @@ def make_target_mat_online_primal(Vdp, Vda, Wda, qs_target, a_, Da, intervalIdx,
 def get_online_state(T_trafo, V, a, X, t):
     Nx = len(X)
     Nt = len(t)
-    qs_online = jnp.zeros((Nx, Nt))
+    qs_online = np.zeros((Nx, Nt))
     q = V @ a
 
     qs_online += T_trafo[0].apply(q)
@@ -341,102 +330,3 @@ def findIntervals(delta_s, delta):
         weights.append(weight)
 
     return intIds, weights
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# def make_V_W_delta_fast(U, delta_s, X, num_sample):
-#     V_delta = []
-#     W_delta = []
-#     Nx = len(X)
-#     dx = X[1] - X[0]
-#
-#     D = central_FDMatrix(order=6, Nx=Nx, dx=dx)
-#     V = jnp.zeros_like(U)
-#     for it in range(num_sample):
-#         shift_val = delta_s[0][it]
-#         for col in range(U.shape[1]):
-#             V = V.at[:, col].set(jnp.interp(X - shift_val, X, U[:, col], period=X[-1]))
-#         V_delta.append(V)
-#         W_delta.append(D @ V)
-#
-#
-#     return jnp.array(V_delta), jnp.array(W_delta)
-# def make_LHS_mat_offline_adjoint_tmp(V_delta, W_delta):
-#     LHS_mat = []
-#
-#     # D(a) matrices are dynamic in nature thus need to be included in the time integration part
-#     for it in range(len(V_delta)):
-#         LHS11 = V_delta[it].transpose() @ V_delta[it]
-#         LHS12 = V_delta[it].transpose() @ W_delta[it]
-#
-#         LHS_mat.append([LHS11, LHS12])
-#
-#     return jnp.array(LHS_mat)
-# def make_RHS_mat_offline_adjoint_tmp(V_delta, A):
-#     RHS_mat = []
-#     for it in range(len(V_delta)):
-#         A_1 = (V_delta[it].transpose() @ A) @ V_delta[it]
-#
-#         RHS_mat.append(A_1)
-#
-#     return jnp.array(RHS_mat)
-# def make_LHS_mat_online_adjoint_tmp(LHS_matrix, Da, intervalIdx, weight):
-#     M11 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
-#     M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da[:, jnp.newaxis]
-#
-#     return M11, M12
-# def make_RHS_mat_online_adjoint_tmp(RHS_matrix, intervalIdx, weight):
-#     A11 = weight * RHS_matrix[intervalIdx][0] + (1 - weight) * RHS_matrix[intervalIdx + 1][0]
-#
-#     return A11
-# def make_target_mat_online_adjoint_tmp(V, Vd, a_, q_target, intervalIdx, weight):
-#     V_p = (weight * V[intervalIdx] + (1 - weight) * V[intervalIdx + 1])
-#     C1 = (weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]).transpose() @ (V_p @ a_ - q_target)
-#     return C1
-# def make_Da_tmp(a):
-#     D_a = a[:len(a)]
-#
-#     return D_a
-# def Calc_Cost_sPODG_tmp(V, as_, qs_target, f, lamda, intIds, weights, **kwargs):
-#     q = jnp.zeros_like(qs_target)
-#     for i in range(f.shape[1]):
-#         V_delta = weights[i] * V[intIds[i]] + (1 - weights[i]) * V[intIds[i] + 1]
-#         q = q.at[:, i].set(V_delta @ as_[:-2, i])
-#
-#     q_res = q - qs_target
-#
-#     cost = 1 / 2 * (L2norm_ROM(q_res, **kwargs)) ** 2 + (lamda['q_reg'] / 2) * (L2norm_ROM(f, **kwargs)) ** 2
-#
-#     return cost
