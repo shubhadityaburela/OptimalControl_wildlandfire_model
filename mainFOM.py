@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 200
+Nxi = 300
 Neta = 1
 Nt = 400
 
