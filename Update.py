@@ -1,6 +1,7 @@
 from Costs import *
 from Grads import *
 from Helper import *
+from time import perf_counter
 from memory_profiler import profile
 
 
@@ -10,8 +11,11 @@ def Update_Control(f, q0, qs_adj, qs_target, mask, A_p, J_prev, omega, lamda, ma
     count = 0
     itr = 5
 
+    time_odeint = perf_counter()  # save timing
+    dL_du = Calc_Grad(lamda, mask, f, qs_adj)
+    time_odeint = perf_counter() - time_odeint
+    print("Calc_Grad t_cpu = %1.6f" % time_odeint)
     for k in range(max_Armijo_iter):
-        dL_du = Calc_Grad(lamda, mask, f, qs_adj, **kwargs)
         f_new = f - omega * dL_du
 
         # Solve the primal equation
@@ -61,7 +65,10 @@ def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p,
     count = 0
     itr = 5
 
-    dL_du = Calc_Grad_PODG(lamda, mask, f, V_a, as_adj, **kwargs)
+    time_odeint = perf_counter()  # save timing
+    dL_du = Calc_Grad_PODG(lamda, mask, f, V_a, as_adj)
+    time_odeint = perf_counter() - time_odeint
+    print("Calc_Grad t_cpu = %1.6f" % time_odeint)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
@@ -81,13 +88,13 @@ def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p,
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), False
+                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), False, 0
             elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
                     print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
-                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True
+                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True, 1
                 else:
                     if J == dJ:
                         print(f"J has started to saturate now so we reduce the omega = {omega}!",
@@ -99,7 +106,7 @@ def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p,
                             f_opt = f_new
                             print(
                                 f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
-                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True
+                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True, 0
                     else:
                         print(f"No NANs found but step size omega = {omega} too large!",
                               f"Reducing omega at iter={k + 1}, with J={J}")
@@ -107,11 +114,15 @@ def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p,
 
 
 def Update_Control_sPODG(f, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, Vdp, Vda, mask, J_prev, intIds, weights,
-                         omega, lamda, max_Armijo_iter, wf, delta, ti_method, **kwargs):
-    print("Armijo iterations.........")
+                         omega, lamda, max_Armijo_iter, wf, delta, ti_method, verbose, **kwargs):
+    if verbose: print("Armijo iterations.........")
     count = 0
     itr = 5
-    dL_du = Calc_Grad_sPODG(lamda, mask, f, Vda, intIds, weights, as_adj, **kwargs)
+
+    time_odeint = perf_counter()  # save timing
+    dL_du = Calc_Grad_sPODG(lamda, mask, f, Vda, intIds, weights, as_adj)
+    time_odeint = perf_counter() - time_odeint
+    if verbose: print("Calc_Grad t_cpu = %1.6f" % time_odeint)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
@@ -131,17 +142,17 @@ def Update_Control_sPODG(f, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, 
                 J_opt = J
                 f_opt = f_new
                 print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
+                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), False, 0
             elif J >= dJ or np.isnan(J):
                 if k == max_Armijo_iter - 1:
                     J_opt = J
                     f_opt = f_new
                     print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
-                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
+                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True, 1
                 else:
                     if J == dJ:
-                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
+                        if verbose: print(f"J has started to saturate now so we reduce the omega = {omega}!",
+                                          f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
                         count = count + 1
                         if count > itr:
@@ -149,8 +160,8 @@ def Update_Control_sPODG(f, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, 
                             f_opt = f_new
                             print(
                                 f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
-                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
+                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True, 0
                     else:
-                        print(f"No NANs found but step size omega = {omega} too large!",
+                        if verbose: print(f"No NANs found but step size omega = {omega} too large!",
                               f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2

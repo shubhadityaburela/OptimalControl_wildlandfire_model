@@ -168,10 +168,10 @@ def ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=2, ti
     return psi, psi_tensor, psiT_tensor
 
 
-def compute_red_basis(qs, **kwargs):
-    U, S, VT = randomized_svd(qs, n_components=kwargs.get('n_rom'), random_state=None)
+def compute_red_basis(qs, nm):
+    U, S, VT = randomized_svd(qs, n_components=nm, random_state=None)
 
-    return U
+    return U, U.dot(np.diag(S).dot(VT))
 
 
 def Adjoint_Matrices():

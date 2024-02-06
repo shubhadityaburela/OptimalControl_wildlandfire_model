@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib
+matplotlib.use("Agg")
 
-matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import os
 import matplotlib.animation as animation
@@ -89,7 +89,7 @@ class PlotFlow:
 
         fig.savefig(immpath + name, dpi=300, transparent=True)
 
-    def plot1D_ROM_converg(self, J, dL_du, itr, Nm, immpath):
+    def plot1D_ROM_converg(self, J, dL_du, itr, Nm_p, Nm_a, immpath):
 
         x = np.arange(len(J))
 
@@ -97,13 +97,14 @@ class PlotFlow:
 
         fig1 = plt.figure(figsize=(8, 8))
         ax1 = fig1.add_subplot(111, label="1")
-        ax1.plot(np.arange(len(J)), J, color="C0", label="Cost functional")
+        ax1.semilogy(np.arange(len(J)), J, color="C0", label="Cost functional")
         ax1.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
         ax1.set_ylabel(r"$J$", color="C0")
         ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax1.tick_params(axis='x', colors="C0")
         ax1.tick_params(axis='y', colors="C0")
         ax1.plot(itr, [J[i] for i in itr], ls="", marker="*", color="C1", label="basis refinement steps")
+        ax1.legend()
         fig1.savefig(immpath + "J", dpi=300, transparent=True)
 
         fig3 = plt.figure(figsize=(8, 8))
@@ -113,6 +114,18 @@ class PlotFlow:
         ax3.set_ylabel(r"relative $\quad \frac{dL}{du}$", color="C0")
         fig3.savefig(immpath + "dL_du_ratio", dpi=300, transparent=True)
 
+        fig4 = plt.figure(figsize=(8, 8))
+        ax4 = fig4.add_subplot(111, label="5")
+        ax4.plot(np.arange(len(Nm_p)), Nm_p, label="Primal truncated modes")
+        ax4.plot(np.arange(len(Nm_a)), Nm_a, label="Adjoint truncated modes")
+        ax4.set_xlabel(r"$n_{\mathrm{refine}}$", color="C0")
+        ax4.set_ylabel(r"$n_{\mathrm{modes}}$", color="C0")
+        ax4.legend()
+        fig4.savefig(immpath + "trunc_modes", dpi=300, transparent=True)
+
+
+
+
     def plot1D_FOM_converg(self, J, dL_du, immpath):
 
         x = np.arange(len(J))
@@ -121,7 +134,7 @@ class PlotFlow:
 
         fig1 = plt.figure(figsize=(8, 8))
         ax1 = fig1.add_subplot(111, label="1")
-        ax1.plot(np.arange(len(J)), J, color="C0", label="Cost functional")
+        ax1.semilogy(np.arange(len(J)), J, color="C0", label="Cost functional")
         ax1.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
         ax1.set_ylabel(r"$J$", color="C0")
         ax1.xaxis.set_major_locator(MaxNLocator(integer=True))

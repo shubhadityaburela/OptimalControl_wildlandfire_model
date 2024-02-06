@@ -190,11 +190,11 @@ class advection:
 
         return V_a.transpose() @ q0_adj
 
-    def RHS_adjoint_PODG(self, a_adj, f, a, q_target, Ar_a, V_a, V_p):
+    def RHS_adjoint_PODG(self, a_adj, f, a, Tarr_a, Ar_a, Tr_a):
 
-        return - (Ar_a @ a_adj + V_a.transpose() @ (V_p @ a - q_target))
+        return - (Ar_a @ a_adj + (Tr_a @ a - Tarr_a))
 
-    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, qs_target, Ar_a, V_a, V_p, ti_method="rk4"):
+    def TimeIntegration_adjoint_PODG(self, at_adj, f0, as_, Ar_a, Tr_a, Tarr_a, ti_method="rk4"):
         # Time loop
         if ti_method == "rk4":
             # Time loop
@@ -204,14 +204,15 @@ class advection:
             for n in range(1, self.Nt):
                 as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_PODG, as_adj[:, -n], f0[:, -(n + 1)], -self.dt,
                                           as_[:, -(n + 1)],
-                                          qs_target[:, -(n + 1)],
-                                          Ar_a, V_a, V_p)
+                                          Tarr_a[:, -(n + 1)],
+                                          Ar_a, Tr_a)
 
             return as_adj
 
 
-    def POD_Galerkin_mat_adjoint(self, V_a, A_p):
-        return (V_a.transpose() @ A_p.transpose()) @ V_a
+    def POD_Galerkin_mat_adjoint(self, V_a, A_p, V_p, q_target):
+        V_aT = V_a.transpose()
+        return (V_aT @ A_p.transpose()) @ V_a, V_aT @ V_p, V_aT @ q_target
 
     ######################################### FOTR sPOD #############################################
     def InitialConditions_primal_sPODG(self, q0, ds, Vd):
