@@ -161,7 +161,7 @@ for opt_step in range(max_opt_steps):
     else:
         dJ = (J - J_list[-1]) / J_list[0]
         if abs(dJ) == 0:
-            if verbose: print("WARNING: dJ has turned 0...")
+            print("WARNING: dJ has turned 0...")
             break
     J_list.append(J)
 
@@ -204,7 +204,7 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du, _, stag = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
                                                     J, intIds, weights, omega, lamda, max_Armijo_iter=18, wf=wf,
-                                                    delta=1e-4, ti_method=tm, verbose=verbose, **kwargs)
+                                                    delta=1e-4, ti_method=tm, **kwargs)
 
     # Save for plotting
     J_opt_list.append(J_opt)
@@ -273,7 +273,7 @@ f_opt = psi @ f
 qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 J = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
 print("\n")
-if verbose: print(f"J with respect to the optimal control for FOM: {J}")
+print(f"J with respect to the optimal control for FOM: {J}")
 
 
 end = time.time()

@@ -7,9 +7,8 @@ def Calc_Grad(lamda, mask, f, qs_adj):
     return dL_du
 
 
-def Calc_Grad_PODG(lamda, mask, f, V, as_adj):
-    qs_adj = V @ as_adj
-    dL_du = lamda['q_reg'] * f + mask.transpose() @ qs_adj
+def Calc_Grad_PODG(lamda, psir_a, f, as_adj):
+    dL_du = lamda['q_reg'] * f + psir_a @ as_adj
     return dL_du
 
 

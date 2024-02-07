@@ -59,7 +59,7 @@ sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
 max_opt_steps = 100000
-verbose = True
+verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
 dL_du_min = 1e-4  # Convergence criteria
@@ -88,8 +88,9 @@ for opt_step in range(max_opt_steps):
     '''
     Forward calculation
     '''
-    if verbose: print("\n-------------------------------")
-    if verbose: print("Optimization step: %d" % opt_step)
+    print("\n-------------------------------")
+    print("Optimization step: %d" % opt_step)
+
     time_odeint = perf_counter()  # save timing
     qs = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
@@ -101,13 +102,13 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter()  # save timing
     J = Calc_Cost(qs, qs_target, f, lamda, **kwargs)
     time_odeint = perf_counter() - time_odeint
-    print("Calc_Cost t_cpu = %1.6f" % time_odeint)
+    if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
     if opt_step == 0:
         pass
     else:
         dJ = (J - J_list[-1]) / J_list[0]
         if abs(dJ) == 0:
-            if verbose: print("WARNING: dJ has turned 0...")
+            print("WARNING: dJ has turned 0...")
             break
     J_list.append(J)
 
@@ -126,7 +127,7 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du = Update_Control(f, q0, qs_adj, qs_target, psi, A_p, J, omega, lamda,
                                      max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
-                                     choose_selected_control=choose_selected_control, **kwargs)
+                                     verbose=verbose, **kwargs)
 
     # Save for plotting
     J_opt_list.append(J_opt)
@@ -135,21 +136,21 @@ for opt_step in range(max_opt_steps):
 
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
-    if verbose: print(
+    print(
         f"J_opt : {J_opt}, ||dL_du|| = {dL_du}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
     )
 
     # Convergence criteria
     if opt_step == max_opt_steps - 1:
-        if verbose: print("\n\n-------------------------------")
-        if verbose: print(
+        print("\n\n-------------------------------")
+        print(
             f"WARNING... maximal number of steps reached, "
             f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
         )
         break
     elif dL_du / dL_du_list[0] < dL_du_min:
-        if verbose: print("\n\n-------------------------------")
-        if verbose: print(
+        print("\n\n-------------------------------")
+        print(
             f"Optimization converged with, "
             f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
         )
@@ -164,7 +165,7 @@ f_opt = psi @ f
 # Compute the cost with the optimal control
 J = Calc_Cost(qs_opt, qs_target, f, lamda, **kwargs)
 print("\n")
-if verbose: print(f"J with respect to the optimal control for FOM: {J}")
+print(f"J with respect to the optimal control for FOM: {J}")
 
 
 

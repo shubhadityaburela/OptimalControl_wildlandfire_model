@@ -62,7 +62,7 @@ sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
 max_opt_steps = 100000
-verbose = True
+verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
 dL_du_min = 1e-4  # Convergence criteria
@@ -101,8 +101,8 @@ start = time.time()
 # %%
 for opt_step in range(max_opt_steps):
 
-    if verbose: print("\n-------------------------------")
-    if verbose: print("Optimization step: %d" % opt_step)
+    print("\n-------------------------------")
+    print("Optimization step: %d" % opt_step)
 
     if opt_step % nth_step == 0:
         time_odeint = perf_counter()  # save timing
@@ -143,13 +143,13 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter()  # save timing
     J = Calc_Cost_PODG(V_p, as_, qs_target, f, lamda, **kwargs)
     time_odeint = perf_counter() - time_odeint
-    print("Calc_Cost t_cpu = %1.6f" % time_odeint)
+    if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
     if opt_step == 0:
         pass
     else:
         dJ = (J - J_list[-1]) / J_list[0]
         if abs(dJ) == 0:
-            if verbose: print("WARNING: dJ has turned 0...")
+            print("WARNING: dJ has turned 0...")
             break
     J_list.append(J)
 
@@ -169,7 +169,7 @@ for opt_step in range(max_opt_steps):
         a_a = wf.InitialConditions_adjoint_PODG(V_a, q0_adj)
 
         # Construct the adjoint system matrices for the POD-Galerkin approach
-        Ar_a, Tr_a, Tarr_a = wf.POD_Galerkin_mat_adjoint(V_a, A_p, V_p, qs_target)
+        Ar_a, Tr_a, Tarr_a, psir_a = wf.POD_Galerkin_mat_adjoint(V_a, A_p, V_p, qs_target, psi)
 
         trunc_modes_adjoint_list.append(n_rom_adjoint)
 
@@ -187,9 +187,9 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter()
-    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, V_a, psir_p, psi, J, omega,
+    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, J, omega,
                                                         lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
-                                                        **kwargs)
+                                                        verbose=verbose, **kwargs)
     # Save for plotting
     J_opt_list.append(J_opt)
     dL_du_list.append(dL_du)
@@ -198,22 +198,22 @@ for opt_step in range(max_opt_steps):
 
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
-    if verbose: print(
+    print(
         f"J_opt : {J_opt}, ||dL_du|| = {dL_du}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
     )
 
     # Convergence criteria
     if opt_step == max_opt_steps - 1:
-        if verbose: print("\n\n-------------------------------")
-        if verbose: print(
+        print("\n\n-------------------------------")
+        print(
             f"WARNING... maximal number of steps reached, "
             f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
     elif dL_du / dL_du_list[0] < dL_du_min:
-        if verbose: print("\n\n-------------------------------")
-        if verbose: print(
+        print("\n\n-------------------------------")
+        print(
             f"Optimization converged with, "
             f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
@@ -225,8 +225,8 @@ for opt_step in range(max_opt_steps):
     '''
     stagnate = stagnate + stag
     if stagnate > 25000:
-        if verbose: print("\n\n-------------------------------")
-        if verbose: print(
+        print("\n\n-------------------------------")
+        print(
             f"WARNING... Armijo starting to stagnate, "
             f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
@@ -244,7 +244,7 @@ f_opt = psi @ f
 qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 J = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
 print("\n")
-if verbose: print(f"J with respect to the optimal control for FOM: {J}")
+print(f"J with respect to the optimal control for FOM: {J}")
 
 end = time.time()
 print("\n")

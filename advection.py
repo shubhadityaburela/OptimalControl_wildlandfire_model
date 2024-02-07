@@ -210,9 +210,9 @@ class advection:
             return as_adj
 
 
-    def POD_Galerkin_mat_adjoint(self, V_a, A_p, V_p, q_target):
+    def POD_Galerkin_mat_adjoint(self, V_a, A_p, V_p, q_target, psi):
         V_aT = V_a.transpose()
-        return (V_aT @ A_p.transpose()) @ V_a, V_aT @ V_p, V_aT @ q_target
+        return (V_aT @ A_p.transpose()) @ V_a, V_aT @ V_p, V_aT @ q_target, psi.transpose() @ V_a
 
     ######################################### FOTR sPOD #############################################
     def InitialConditions_primal_sPODG(self, q0, ds, Vd):

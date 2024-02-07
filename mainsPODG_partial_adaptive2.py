@@ -164,7 +164,7 @@ for opt_step in range(max_opt_steps):
     else:
         dJ = (J - J_list[-1]) / J_list[0]
         if abs(dJ) == 0:
-            if verbose: print("WARNING: dJ has turned 0...")
+            print("WARNING: dJ has turned 0...")
             break
     J_list.append(J)
 
@@ -247,8 +247,8 @@ for opt_step in range(max_opt_steps):
         refine = True
         stagnate = 0
 
-        print("\n\n-------------------------------")
-        print(f"WARNING... Armijo started to stagnate, so we refine ")
+        if verbose: print("\n\n-------------------------------")
+        if verbose: print(f"WARNING... Armijo started to stagnate, so we refine ")
     else:
         refine = False
 
@@ -276,7 +276,7 @@ f_opt = psi @ f
 qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 J = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
 print("\n")
-if verbose: print(f"J with respect to the optimal control for FOM: {J}")
+print(f"J with respect to the optimal control for FOM: {J}")
 
 
 end = time.time()

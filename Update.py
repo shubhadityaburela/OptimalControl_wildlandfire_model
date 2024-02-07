@@ -6,7 +6,7 @@ from memory_profiler import profile
 
 
 def Update_Control(f, q0, qs_adj, qs_target, mask, A_p, J_prev, omega, lamda, max_Armijo_iter,
-                   wf, delta, ti_method, **kwargs):
+                   wf, delta, ti_method, verbose, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
@@ -14,7 +14,7 @@ def Update_Control(f, q0, qs_adj, qs_target, mask, A_p, J_prev, omega, lamda, ma
     time_odeint = perf_counter()  # save timing
     dL_du = Calc_Grad(lamda, mask, f, qs_adj)
     time_odeint = perf_counter() - time_odeint
-    print("Calc_Grad t_cpu = %1.6f" % time_odeint)
+    if verbose: print("Calc_Grad t_cpu = %1.6f" % time_odeint)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
@@ -43,7 +43,7 @@ def Update_Control(f, q0, qs_adj, qs_target, mask, A_p, J_prev, omega, lamda, ma
                     return f_opt, J_opt, L2norm(dL_du, **kwargs)
                 else:
                     if J == dJ:
-                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
+                        if verbose: print(f"J has started to saturate now so we reduce the omega = {omega}!",
                               f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
                         count = count + 1
@@ -54,21 +54,21 @@ def Update_Control(f, q0, qs_adj, qs_target, mask, A_p, J_prev, omega, lamda, ma
                                 f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
                             return f_opt, J_opt, L2norm(dL_du, **kwargs)
                     else:
-                        print(f"No NANs found but step size omega = {omega} too large!",
+                        if verbose: print(f"No NANs found but step size omega = {omega} too large!",
                               f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
 
 
-def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p, mask, J_prev, omega, lamda,
-                        max_Armijo_iter, wf, delta, ti_method, **kwargs):
+def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, J_prev, omega, lamda,
+                        max_Armijo_iter, wf, delta, ti_method, verbose, **kwargs):
     print("Armijo iterations.........")
     count = 0
     itr = 5
 
     time_odeint = perf_counter()  # save timing
-    dL_du = Calc_Grad_PODG(lamda, mask, f, V_a, as_adj)
+    dL_du = Calc_Grad_PODG(lamda, psir_a, f, as_adj)
     time_odeint = perf_counter() - time_odeint
-    print("Calc_Grad t_cpu = %1.6f" % time_odeint)
+    if verbose: print("Calc_Grad t_cpu = %1.6f" % time_odeint)
     for k in range(max_Armijo_iter):
         f_new = f - omega * dL_du
 
@@ -97,7 +97,7 @@ def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p,
                     return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True, 1
                 else:
                     if J == dJ:
-                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
+                        if verbose: print(f"J has started to saturate now so we reduce the omega = {omega}!",
                               f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
                         count = count + 1
@@ -108,7 +108,7 @@ def Update_Control_PODG(f, a0_primal, as_adj, qs_target, V_p, Ar_p, V_a, psir_p,
                                 f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
                             return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs), True, 0
                     else:
-                        print(f"No NANs found but step size omega = {omega} too large!",
+                        if verbose: print(f"No NANs found but step size omega = {omega} too large!",
                               f"Reducing omega at iter={k + 1}, with J={J}")
                         omega = omega / 2
 
