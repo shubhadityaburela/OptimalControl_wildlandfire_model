@@ -9,233 +9,24 @@ import jax
 
 import sys
 import os
-sys.path.append('./sPOD/lib/')
 
-from sPOD_tools import shifted_rPCA, shifted_POD, build_all_frames, give_interpolation_error
-from transforms import transforms
-from Helper_sPODG import make_Da
+
+def tensor_mat_prod(T, M):
+    prod = jnp.zeros((T.shape[1], T.shape[0]))
+    for i in range(T.shape[0]):
+        prod = prod.at[:, i].set(T.at[i, ...].get() @ M.at[:, i].get())
+
+    return prod
 
 
 def L2norm(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
+    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
 
 
 def L2norm_ROM(q, **kwargs):
     q = q.reshape((-1))
-    return jnp.sqrt(jnp.sum(jnp.square(q)) * kwargs.get('dt'))
-
-
-def Calc_Cost(q, q_target, f, lamda, **kwargs):
-    q_res = q - q_target
-    cost = 1 / 2 * (L2norm(q_res, **kwargs)) ** 2 + (lamda['q_reg'] / 2) * (L2norm(f, **kwargs)) ** 2
-
-    return cost
-
-
-def Calc_Cost_PODG(V, as_, qs_target, f, lamda, **kwargs):
-    q_res = V @ as_ - qs_target
-
-    cost = 1 / 2 * (L2norm_ROM(q_res, **kwargs)) ** 2 + (lamda['q_reg'] / 2) * (L2norm_ROM(f, **kwargs)) ** 2
-
-    return cost
-
-
-def Calc_Cost_sPODG(V, as_, qs_target, f, lamda, intIds, weights, **kwargs):
-    q = jnp.zeros_like(qs_target)
-    for i in range(f.shape[1]):
-        V_delta = weights[i] * V[intIds[i]] + (1 - weights[i]) * V[intIds[i] + 1]
-        q = q.at[:, i].set(V_delta @ as_[i][jnp.newaxis])
-
-    q_res = q - qs_target
-
-    cost = 1 / 2 * (L2norm_ROM(q_res, **kwargs)) ** 2 + (lamda['q_reg'] / 2) * (L2norm_ROM(f, **kwargs)) ** 2
-
-    return cost
-
-
-def Calc_Grad(lamda, mask, f, qs_adj, **kwargs):
-
-    dL_du = lamda['q_reg'] * f + mask.transpose() @ qs_adj
-
-    return dL_du
-
-
-def Calc_Grad_PODG(lamda, mask, f, V, as_adj, **kwargs):
-    qs_adj = V @ as_adj
-    dL_du = lamda['q_reg'] * f + mask @ qs_adj
-    return dL_du
-
-
-def Calc_Grad_sPODG(lamda, f, ct, intIds, weights, as_, as_adj, **kwargs):
-    as_adj_1 = jnp.zeros_like(f)
-    as_adj_2 = jnp.zeros_like(f)
-    for i in range(f.shape[1]):
-        m1 = weights[i] * ct[intIds[i]][0] + (1 - weights[i]) * ct[intIds[i] + 1][0]
-        m2 = weights[i] * ct[intIds[i]][1] + (1 - weights[i]) * ct[intIds[i] + 1][1]
-        Da = make_Da(as_[:, i])
-        as_adj_1 = as_adj_1.at[:, i].set(m1 @ as_adj[0, i][jnp.newaxis])
-        as_adj_2 = as_adj_2.at[:, i].set(m2 @ (Da[:, jnp.newaxis] @ as_adj[1, i][jnp.newaxis]))
-
-    dL_du = lamda['q_reg'] * f + as_adj_1 + as_adj_2
-
-    return dL_du
-
-
-def Update_Control(f, omega, lamda, q0, qs_adj, qs_target, J_prev, max_Armijo_iter,
-                   wf, delta, ti_method, **kwargs):
-    print("Armijo iterations.........")
-    count = 0
-    itr = 5
-    mask = wf.psi
-
-    for k in range(max_Armijo_iter):
-        dL_du = Calc_Grad(lamda, mask, f, qs_adj, **kwargs)
-        f_new = f - omega * dL_du
-
-        # Solve the primal equation
-        qs = wf.TimeIntegration_primal(q0, f_new, ti_method=ti_method)
-
-        if jnp.isnan(qs).any() and k < max_Armijo_iter - 1:
-            print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
-            omega = omega / 2
-        elif jnp.isnan(qs).any() and k == max_Armijo_iter - 1:
-            print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
-            exit()
-        else:
-            J = Calc_Cost(qs, qs_target, f_new, lamda, **kwargs)
-            dJ = J_prev - delta * omega * L2norm(dL_du, **kwargs) ** 2
-            if J < dJ:
-                J_opt = J
-                f_opt = f_new
-                print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, L2norm(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
-                if k == max_Armijo_iter - 1:
-                    J_opt = J
-                    f_opt = f_new
-                    print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
-                    return f_opt, J_opt, L2norm(dL_du, **kwargs)
-                else:
-                    if J == dJ:
-                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
-                        omega = omega / 2
-                        count = count + 1
-                        if count > itr:
-                            J_opt = J
-                            f_opt = f_new
-                            print(
-                                f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
-                            return f_opt, J_opt, L2norm(dL_du, **kwargs)
-                    else:
-                        print(f"No NANs found but step size omega = {omega} too large!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
-                        omega = omega / 2
-
-
-
-def Update_Control_ROM(f, omega, lamda, a0_primal, as_adj, qs_target, J_prev, max_Armijo_iter,
-                   wf, delta, ti_method, red_nl, **kwargs):
-    print("Armijo iterations.........")
-    count = 0
-    itr = 5
-    mask = wf.psi.transpose()
-
-    dL_du = Calc_Grad_PODG(lamda, mask, f, wf.V, as_adj, **kwargs)
-    for k in range(max_Armijo_iter):
-        f_new = f - omega * dL_du
-
-        # Solve the primal equation
-        as_ = wf.TimeIntegration_primal_PODG(a0_primal, f_new, ti_method)
-
-        if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
-            print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
-            omega = omega / 2
-        elif jnp.isnan(as_).any() and k == max_Armijo_iter - 1:
-            print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
-            exit()
-        else:
-            J = Calc_Cost_PODG(wf.V, as_, qs_target, f_new, lamda, **kwargs)
-            dJ = J_prev - delta * omega * L2norm_ROM(dL_du, **kwargs) ** 2
-            if J < dJ:
-                J_opt = J
-                f_opt = f_new
-                print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
-                if k == max_Armijo_iter - 1:
-                    J_opt = J
-                    f_opt = f_new
-                    print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
-                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-                else:
-                    if J == dJ:
-                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
-                        omega = omega / 2
-                        count = count + 1
-                        if count > itr:
-                            J_opt = J
-                            f_opt = f_new
-                            print(
-                                f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
-                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-                    else:
-                        print(f"No NANs found but step size omega = {omega} too large!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
-                        omega = omega / 2
-
-
-
-def Update_Control_sPOD_ROM(f, omega, lamda, lhs, rhs, c, a0_primal, as_, as_adj, qs_target, J_prev, ct, intIds, weights, max_Armijo_iter,
-                   wf, delta, ti_method, red_nl, **kwargs):
-    print("Armijo iterations.........")
-    count = 0
-    itr = 5
-    dL_du = Calc_Grad_sPODG(lamda, f, ct, intIds, weights, as_, as_adj, **kwargs)
-    for k in range(max_Armijo_iter):
-        f_new = f - omega * dL_du
-
-        # Solve the primal equation
-        as_ = wf.TimeIntegration_primal_sPODG(lhs, rhs, c, a0_primal, f_new, ti_method)
-
-        if jnp.isnan(as_).any() and k < max_Armijo_iter - 1:
-            print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
-            omega = omega / 2
-        elif jnp.isnan(as_).any() and k == max_Armijo_iter - 1:
-            print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
-            exit()
-        else:
-            J = Calc_Cost_sPODG(wf.V_delta, as_[0, :], qs_target, f_new, lamda, intIds, weights, ** kwargs)
-            dJ = J_prev - delta * omega * L2norm_ROM(dL_du, **kwargs) ** 2
-            if J < dJ:
-                J_opt = J
-                f_opt = f_new
-                print(f"Armijo iteration converged after {k + 1} steps")
-                return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-            elif J >= dJ or jnp.isnan(J):
-                if k == max_Armijo_iter - 1:
-                    J_opt = J
-                    f_opt = f_new
-                    print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
-                    return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-                else:
-                    if J == dJ:
-                        print(f"J has started to saturate now so we reduce the omega = {omega}!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
-                        omega = omega / 2
-                        count = count + 1
-                        if count > itr:
-                            J_opt = J
-                            f_opt = f_new
-                            print(
-                                f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
-                            return f_opt, J_opt, L2norm_ROM(dL_du, **kwargs)
-                    else:
-                        print(f"No NANs found but step size omega = {omega} too large!",
-                              f"Reducing omega at iter={k + 1}, with J={J}")
-                        omega = omega / 2
+    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dt'))
 
 
 # BDF4 helper functions
@@ -292,6 +83,7 @@ def scipy_root(f, Df=None):
     return solver
 
 
+# Other Helper functions
 def Calc_target_val(qs, wf, kind='exp_decay', **kwargs):
     NN = kwargs.get('Nx') * kwargs.get('Ny')
 
@@ -349,9 +141,10 @@ def ControlSelectionMatrix(wf, n_c):
     return psi
 
 
-
-def ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=2):
+def ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=2, tilt_from=None):
     psi = np.zeros((wf.Nxi, n_c))
+    psi_tensor = np.zeros((wf.Nt, wf.Nxi, n_c))
+    psiT_tensor = np.zeros((wf.Nt, n_c, wf.Nxi))
 
     control_index = np.split(np.arange(0, wf.Nxi), n_c)
     for i in range(len(control_index)):
@@ -364,13 +157,21 @@ def ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=2):
     for i in range(shut_off_the_first_ncontrols):
         psi[:, i] = 0
 
-    return psi
+    for i in range(wf.Nt):
+        if i < tilt_from:
+            psi_tensor[i, ...] = np.zeros_like(psi)
+            psiT_tensor[i, ...] = np.zeros_like(psi.transpose())
+        else:
+            psi_tensor[i, ...] = psi
+            psiT_tensor[i, ...] = psi.transpose()
+
+    return psi, psi_tensor, psiT_tensor
 
 
-def compute_red_basis(qs, **kwargs):
-    U, S, VT = randomized_svd(qs, n_components=kwargs.get('n_rom'), random_state=None)
+def compute_red_basis(qs, nm):
+    U, S, VT = randomized_svd(qs, n_components=nm, random_state=None)
 
-    return U
+    return U, U.dot(np.diag(S).dot(VT))
 
 
 def Adjoint_Matrices():
