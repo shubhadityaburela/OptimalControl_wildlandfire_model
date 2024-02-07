@@ -51,8 +51,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/sPODG/adaptive/refine=nth/Nm=20/"  # For data
-immpath = "./plots/sPODG_1D/adaptive/refine=nth/Nm=20/"  # For plots
+impath = "./data/sPODG/FOTR/adaptive/refine=nth/Nm=20/"  # For data
+immpath = "./plots/sPODG_1D/FOTR/adaptive/refine=nth/Nm=20/"  # For plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)

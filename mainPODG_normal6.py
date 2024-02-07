@@ -50,8 +50,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/PODG/FOTR/adaptive/refine=nth/Nm=50/"
-immpath = "./plots/PODG_1D/FOTR/adaptive/refine=nth/Nm=50/"
+impath = "./data/PODG/FOTR/normal/refine=50/Nm=150/"
+immpath = "./plots/PODG_1D/FOTR/normal/refine=50/Nm=150/"
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -61,7 +61,7 @@ sigma = np.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 50000
+max_opt_steps = 100000
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1e-3  # initial step size for gradient update
@@ -90,15 +90,13 @@ if choose_selected_control:
 
 # %% ROM variables
 # Modes for the ROM
-n_rom_primal = 50
-n_rom_adjoint = 50
+nth_step = 50  # Refine every nth step
+n_rom_primal = 150
+n_rom_adjoint = 150
 
 
 # Basis update condition
 stagnate = 0
-refine = True
-stag_ctr = 10
-J_prev = 0
 
 start = time.time()
 # %%
@@ -107,7 +105,7 @@ for opt_step in range(max_opt_steps):
     if verbose: print("\n-------------------------------")
     if verbose: print("Optimization step: %d" % opt_step)
 
-    if refine:
+    if opt_step % nth_step == 0:
         time_odeint = perf_counter()  # save timing
         '''
         Forward calculation with primal at intermediate steps
@@ -156,7 +154,7 @@ for opt_step in range(max_opt_steps):
             break
     J_list.append(J)
 
-    if refine:
+    if opt_step % nth_step == 0:
         time_odeint = perf_counter()  # save timing
         '''
         Backward calculation with adjoint at intermediate steps
@@ -191,8 +189,8 @@ for opt_step in range(max_opt_steps):
     '''
     time_odeint = perf_counter()
     f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, V_a, psir_p, psi, J, omega,
-                                                   lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
-                                                   **kwargs)
+                                                        lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
+                                                        **kwargs)
     # Save for plotting
     J_opt_list.append(J_opt)
     dL_du_list.append(dL_du)
@@ -227,25 +225,14 @@ for opt_step in range(max_opt_steps):
     Checking for stagnation
     '''
     stagnate = stagnate + stag
-    if stagnate > stag_ctr:
-        refine = True
-        stagnate = 0
-
-        dJ = (J_opt - J_prev) / J_opt
-        if abs(dJ * 100) < 1e-5:
-            if verbose: print("\n\n-------------------------------")
-            if verbose: print("WARNING: dJ between subsequent basis refinement steps has turned close to 0...")
-            if verbose: print(
-                f"Optimization stopped with, "
-                f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
-                f"Number of basis refinements = {len(basis_refine_itr_list)}"
-            )
-            break
-        J_prev = J_opt
+    if stagnate > 25000:
         if verbose: print("\n\n-------------------------------")
-        if verbose: print(f"WARNING... Armijo started to stagnate, so we refine ")
-    else:
-        refine = False
+        if verbose: print(
+            f"WARNING... Armijo starting to stagnate, "
+            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
+            f"Number of basis refinements = {len(basis_refine_itr_list)}"
+        )
+        break
 
 
 # Compute the final state

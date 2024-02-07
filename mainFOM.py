@@ -48,8 +48,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/FOM/coarse/"   # Storing data
-immpath = "./plots/FOM_1D/coarse/"  # Storing plots
+impath = "./data/FOM/FOTR/coarse/"   # Storing data
+immpath = "./plots/FOM_1D/FOTR/coarse/"  # Storing plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
