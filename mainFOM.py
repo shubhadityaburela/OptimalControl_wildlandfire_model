@@ -58,11 +58,11 @@ np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 100
-verbose = True
+max_opt_steps = 50000
+verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1e-3  # initial step size for gradient update
-dL_du_min = 1e-4  # Convergence criteria
+omega = 1  # initial step size for gradient update
+dL_du_min = 1e-6  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
@@ -166,6 +166,7 @@ f_opt = psi @ f
 J = Calc_Cost(qs_opt, qs_target, f, lamda, **kwargs)
 print("\n")
 print(f"J with respect to the optimal control for FOM: {J}")
+
 
 
 end = time.time()

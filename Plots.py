@@ -89,7 +89,7 @@ class PlotFlow:
 
         fig.savefig(immpath + name, dpi=300, transparent=True)
 
-    def plot1D_ROM_converg(self, J, dL_du, itr, Nm, immpath):
+    def plot1D_ROM_converg(self, J, Jf, dL_du, itr, Nm, immpath):
 
         x = np.arange(len(J))
 
@@ -98,6 +98,7 @@ class PlotFlow:
         fig1 = plt.figure(figsize=(8, 8))
         ax1 = fig1.add_subplot(111, label="1")
         ax1.semilogy(np.arange(len(J)), J, color="C0", label="Cost functional")
+        ax1.semilogy(np.arange(len(Jf)), Jf, color="C2", label="Cost functional (FOM)")
         ax1.set_xlabel(r"$n_{\mathrm{iter}}$", color="C0")
         ax1.set_ylabel(r"$J$", color="C0")
         ax1.xaxis.set_major_locator(MaxNLocator(integer=True))

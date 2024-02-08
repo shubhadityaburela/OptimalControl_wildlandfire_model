@@ -50,8 +50,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/PODG/FRTO/normal/refine=100/Nm=50/"
-immpath = "./plots/PODG_1D/FRTO/normal/refine=100/Nm=50/"
+impath = "./data/PODG/FRTO/normal/refine=50/Nm=30/"
+immpath = "./plots/PODG_1D/FRTO/normal/refine=50/Nm=30/"
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -61,15 +61,16 @@ sigma = np.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 100000
+max_opt_steps = 50000
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1e-3  # initial step size for gradient update
-dL_du_min = 1e-4  # Convergence criteria
+omega = 1  # initial step size for gradient update
+dL_du_min = 1e-6  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
+J_opt_FOM_list = []  # Collecting the optimal cost functional with respect to FOM for plotting
 dL_du_list = []  # Collecting the gradient over the optimization steps
 J_opt_list = []  # Collecting the optimal cost functional for plotting
 dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
@@ -89,10 +90,10 @@ if choose_selected_control:
 
 # %% ROM variables
 # Modes for the ROM
-nth_step = 100  # Refine every nth step
+nth_step = 50  # Refine every nth step
 
 # Modes for the ROM
-n_rom = 50
+n_rom = 30
 
 # Basis update condition
 stagnate = 0
@@ -142,17 +143,9 @@ for opt_step in range(max_opt_steps):
     Objective and costs for control
     '''
     time_odeint = perf_counter()  # save timing
-    J = Calc_Cost_PODG(V, as_, qs_target, f, lamda, **kwargs)
+    J = Calc_Cost_PODG(V, as_, qs_target, f, psi, lamda, **kwargs)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
-    if opt_step == 0:
-        pass
-    else:
-        dJ = (J - J_list[-1]) / J_list[0]
-        if abs(dJ) == 0:
-            if verbose: print("WARNING: dJ has turned 0...")
-            break
-    J_list.append(J)
 
 
     '''
@@ -168,10 +161,15 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter()
-    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V, Ar_p, psir_p, J, omega,
+    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V, Ar_p, psir_p, psi, J, omega,
                                                    lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
                                                    verbose=verbose, **kwargs)
+
     # Save for plotting
+    qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
+    JJ = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
+
+    J_opt_FOM_list.append(JJ)
     J_opt_list.append(J_opt)
     dL_du_list.append(dL_du)
     dL_du_ratio_list.append(dL_du / dL_du_list[0])
@@ -196,19 +194,6 @@ for opt_step in range(max_opt_steps):
         print("\n\n-------------------------------")
         print(
             f"Optimization converged with, "
-            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
-            f"Number of basis refinements = {len(basis_refine_itr_list)}"
-        )
-        break
-
-    '''
-    Checking for stagnation
-    '''
-    stagnate = stagnate + stag
-    if stagnate > 25000:
-        print("\n\n-------------------------------")
-        print(
-            f"WARNING... Armijo starting to stagnate, "
             f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}, "
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
@@ -248,6 +233,7 @@ f_opt = np.load(impath + 'f_opt.npy')
 
 # Save the convergence lists
 np.save(impath + 'J_opt_list.npy', J_opt_list)
+np.save(impath + 'J_opt_FOM_list.npy', J_opt_FOM_list)
 np.save(impath + 'dL_du_ratio_list.npy', dL_du_ratio_list)
 np.save(impath + 'basis_refine_itr_list.npy', basis_refine_itr_list)
 np.save(impath + 'trunc_modes_list.npy', trunc_modes_list)
@@ -263,8 +249,8 @@ if Dimension == "1D":
     pf.plot1D(f_opt, name="f_opt", immpath=immpath)
     pf.plot1D(sigma, name="sigma", immpath=immpath)
 
-    pf.plot1D_ROM_converg(J_opt_list, dL_du_ratio_list,
+    pf.plot1D_ROM_converg(J_opt_list, J_opt_FOM_list,
+                          dL_du_ratio_list,
                           basis_refine_itr_list,
                           trunc_modes_list,
                           immpath=immpath)
-

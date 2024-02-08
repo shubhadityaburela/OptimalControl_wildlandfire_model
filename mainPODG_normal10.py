@@ -50,8 +50,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/PODG/FRTO/normal/refine=1/Nm=150/"
-immpath = "./plots/PODG_1D/FRTO/normal/refine=1/Nm=150/"
+impath = "./data/PODG/FRTO/normal/refine=50/Nm=150/"
+immpath = "./plots/PODG_1D/FRTO/normal/refine=50/Nm=150/"
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -90,7 +90,7 @@ if choose_selected_control:
 
 # %% ROM variables
 # Modes for the ROM
-nth_step = 1  # Refine every nth step
+nth_step = 50  # Refine every nth step
 
 # Modes for the ROM
 n_rom = 150
@@ -254,4 +254,5 @@ if Dimension == "1D":
                           basis_refine_itr_list,
                           trunc_modes_list,
                           immpath=immpath)
+
 
