@@ -6,6 +6,7 @@ from jax.scipy.optimize import minimize
 from scipy.optimize import root
 import jax.numpy as jnp
 import jax
+from scipy import integrate
 
 import sys
 import os
@@ -19,14 +20,22 @@ def tensor_mat_prod(T, M):
     return prod
 
 
-def L2norm(q, **kwargs):
+def trapezoidal_integration(q, **kwargs):
+    return integrate.trapezoid(integrate.trapezoid(np.square(q), axis=0, dx=kwargs['dx']), axis=0, dx=kwargs['dt'])
+
+
+def integrate_cost(q, **kwargs):
+    q[:, 0] = q[:, 0] / 2
+    q[:, -1] = q[:, -1] / 2
     q = q.reshape((-1))
-    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dx') * kwargs.get('dt'))
+    return np.sum(np.square(q)) * kwargs.get('dx') * kwargs.get('dt')
 
 
 def L2norm_ROM(q, **kwargs):
+    q[:, 0] = q[:, 0] / 2
+    q[:, -1] = q[:, -1] / 2
     q = q.reshape((-1))
-    return np.sqrt(np.sum(np.square(q)) * kwargs.get('dt'))
+    return np.sum(np.square(q)) * kwargs.get('dt')
 
 
 # BDF4 helper functions

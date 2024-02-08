@@ -150,7 +150,7 @@ for opt_step in range(max_opt_steps):
     Objective and costs for control
     '''
     time_odeint = perf_counter()  # save timing
-    J = Calc_Cost_PODG(V_p, as_, qs_target, f, lamda, **kwargs)
+    J = Calc_Cost_PODG(V_p, as_, qs_target, f, psi, lamda, **kwargs)
     time_odeint = perf_counter() - time_odeint
     print("Calc_Cost t_cpu = %1.6f" % time_odeint)
     if opt_step == 0:
@@ -204,7 +204,7 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter()
-    f, J_opt, dL_du, refine, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, J, omega,
+    f, J_opt, dL_du, refine, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, psi, J, omega,
                                                         lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
                                                         verbose=verbose, **kwargs)
     # Save for plotting

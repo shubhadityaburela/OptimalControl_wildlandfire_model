@@ -69,7 +69,6 @@ dL_du_min = 1e-4  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
-J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
 J_opt_list = []  # Collecting the optimal cost functional for plotting
 dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
@@ -144,17 +143,9 @@ for opt_step in range(max_opt_steps):
     Objective and costs for control
     '''
     time_odeint = perf_counter()  # save timing
-    J = Calc_Cost_PODG(V_p, as_, qs_target, f, lamda, **kwargs)
+    J = Calc_Cost_PODG(V_p, as_, qs_target, f, psi, lamda, **kwargs)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
-    if opt_step == 0:
-        pass
-    else:
-        dJ = (J - J_list[-1]) / J_list[0]
-        if abs(dJ) == 0:
-            print("WARNING: dJ has turned 0...")
-            break
-    J_list.append(J)
 
     if refine:
         time_odeint = perf_counter()  # save timing
@@ -190,7 +181,7 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter()
-    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, J, omega,
+    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, psi, J, omega,
                                                    lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
                                                    verbose=verbose, **kwargs)
     # Save for plotting

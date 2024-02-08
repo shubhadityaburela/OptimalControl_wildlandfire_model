@@ -204,7 +204,7 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du, _, stag = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
                                                     J, intIds, weights, omega, lamda, max_Armijo_iter=18, wf=wf,
-                                                    delta=1e-4, ti_method=tm, **kwargs)
+                                                    delta=1e-4, ti_method=tm, verbose=verbose, **kwargs)
 
     # Save for plotting
     J_opt_list.append(J_opt)
