@@ -7,6 +7,7 @@ from scipy.optimize import root
 import jax.numpy as jnp
 import jax
 from scipy import integrate
+from scipy import optimize
 
 import sys
 import os
@@ -174,7 +175,41 @@ def ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=2, ti
             psi_tensor[i, ...] = psi
             psiT_tensor[i, ...] = psi.transpose()
 
-    return psi, psi_tensor, psiT_tensor
+    psi_tmp = np.zeros((wf.Nxi, n_c))
+    for i in range(n_c):
+        psi_tmp[:, i] = func(wf.X - 2.5 - i * 5, sigma=4)
+
+    return psi_tmp, psi_tensor, psiT_tensor
+
+
+def func(x, sigma=2):
+    return np.exp(-x ** 2 / sigma ** 2)
+
+
+def objective(c, X, qs_0, qs_frame):
+    interpolated_f = np.interp(X + c, X, qs_frame, period=X[-1])
+    error = interpolated_f - qs_0
+
+    squared_error = np.linalg.norm(error)
+    return squared_error
+
+
+def calc_shift(qs, qs_0, X, t):
+    # Initial guess for c
+    Nt = len(t)
+    initial_guess_c = 0
+    optimal_c = np.zeros((1, Nt))
+
+    for i in range(Nt):
+        qs_frame = qs[:, i]
+        # Minimize the objective function with respect to c
+        result = optimize.minimize(objective, np.asarray([initial_guess_c]), args=(X, qs_0, qs_frame,))
+
+        # Extract the optimal value of c
+        optimal_c[:, i] = -result.x[0]
+        initial_guess_c = result.x[0]
+
+    return optimal_c
 
 
 def compute_red_basis(qs, nm):

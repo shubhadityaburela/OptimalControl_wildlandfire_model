@@ -131,7 +131,7 @@ def central_FDMatrix(order, Nx, dx):
 def subsample(X, num_sample):
     active_subspace_factor = -1
 
-    # sampling points for the shifts (The shift values can range from 0 to X/2 and then is a mirror image for X/2 to X)
+    # sampling points for the shifts
     delta_samples = np.linspace(0, X[-1], num_sample)
 
     delta_sampled = [active_subspace_factor * delta_samples,
@@ -160,13 +160,10 @@ def get_T(delta_s, X, t):
     return trafo_1.shifts_pos, trafo_1
 
 
-def make_V_W_delta(U, T_delta, X, num_sample):
+def make_V_W_delta(U, T_delta, D, num_sample):
     V_delta = []
     W_delta = []
-    Nx = len(X)
-    dx = X[1] - X[0]
 
-    D = central_FDMatrix(order=6, Nx=Nx, dx=dx)
     for it in range(num_sample):
         V11 = T_delta[it] @ U
         V_delta.append(V11)
@@ -215,19 +212,15 @@ def make_control_mat_offline_primal(V_delta, W_delta, psi):
     return C_mat
 
 
-def make_target_term_matrices(Vd_p, Vd_a, Wd_a, qs_target):
+def make_target_term_matrices(Vd_p, Vd_a, Wd_a):
     T1 = []
-    T2 = []
     for it in range(len(Vd_p)):
         T_11 = Vd_a[it].transpose() @ Vd_p[it]
-        T_12 = Vd_a[it].transpose() @ qs_target
         T_21 = Wd_a[it].transpose() @ Vd_p[it]
-        T_22 = Wd_a[it].transpose() @ qs_target
 
         T1.append([T_11, T_21])
-        T2.append([T_12, T_22])
 
-    return T1, T2
+    return T1
 
 
 def make_control_update_mat(V_delta, W_delta, psi):
@@ -267,11 +260,15 @@ def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
     M21 = M12.transpose()
     M22 = (Da[:, np.newaxis].transpose() @ (weight * LHS_matrix[intervalIdx][2] +
                                              (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da[:, np.newaxis]
-    M22_reg = np.where(M22 == 0, M22 + 1e-12, M22)
     M = np.block([
         [M11, M12],
-        [M21, M22_reg]
+        [M21, M22]
     ])
+
+    # if np.linalg.cond(M, p='fro') == np.inf:
+    #     M_reg = M + 1e-12 * np.eye(M.shape[0], M.shape[1])
+    # else:
+    #     M_reg = M
 
     return M
 
@@ -297,11 +294,14 @@ def make_control_mat_online_primal(f, C, Da, intervalIdx, weight):
     return C
 
 
-def make_target_mat_online_primal(Vdp, Vda, Wda, qs_target, a_, Da, intervalIdx, weight):
+def make_target_mat_online_primal(T_a, Vda, Wda, qs_target, a_, Da, intervalIdx, weight):
 
-    V_p = (weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1])
-    C1 = (weight * Vda[intervalIdx] + (1 - weight) * Vda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
-    C2 = Da[:, np.newaxis].transpose() @ (weight * Wda[intervalIdx] + (1 - weight) * Wda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
+    VdaTVdp = (weight * T_a[intervalIdx][0] + (1 - weight) * T_a[intervalIdx + 1][0])
+    WdaTVdp = (weight * T_a[intervalIdx][1] + (1 - weight) * T_a[intervalIdx + 1][1])
+    V_a = weight * Vda[intervalIdx] + (1 - weight) * Vda[intervalIdx + 1]
+    W_a = weight * Wda[intervalIdx] + (1 - weight) * Wda[intervalIdx + 1]
+    C1 = (VdaTVdp @ a_ - V_a.transpose() @ qs_target)
+    C2 = Da[:, np.newaxis].transpose() @ (WdaTVdp @ a_ - W_a.transpose() @ qs_target)
 
     C = np.concatenate((C1, C2))
 

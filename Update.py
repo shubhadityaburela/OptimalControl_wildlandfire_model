@@ -165,3 +165,63 @@ def Update_Control_sPODG(f, lhs, rhs, c, a0_primal, as_adj, qs_target, delta_s, 
                         if verbose: print(f"No NANs found but step size omega = {omega} too large!",
                               f"Reducing omega at iter={k + 1}")
                         omega = omega / 4
+
+
+
+
+
+
+
+
+def Update_Control_sPODG_tmp(f, lhs, rhs, c, a0_primal, qs_adj, qs_target, delta_s, Vdp, mask, J_prev, intIds, weights,
+                         omega, lamda, max_Armijo_iter, wf, delta, ti_method, verbose, **kwargs):
+    if verbose: print("Armijo iterations.........")
+    count = 0
+    itr = 5
+
+    time_odeint = perf_counter()  # save timing
+    dL_du = Calc_Grad(lamda, mask, f, qs_adj)
+    time_odeint = perf_counter() - time_odeint
+    if verbose: print("Calc_Grad t_cpu = %1.6f" % time_odeint)
+    for k in range(max_Armijo_iter):
+        f_new = f - omega * dL_du
+
+        # Solve the primal equation
+        as_ = wf.TimeIntegration_primal_sPODG(lhs, rhs, c, a0_primal, f_new, delta_s, ti_method)
+
+        if np.isnan(as_).any() and k < max_Armijo_iter - 1:
+            print(f"Warning!!! step size omega = {omega} too large!", f"Reducing the step size at iter={k + 1}")
+            omega = omega / 4
+        elif np.isnan(as_).any() and k == max_Armijo_iter - 1:
+            print("With the given Armijo iterations the procedure did not converge. Increase the max_Armijo_iter")
+            exit()
+        else:
+            J = Calc_Cost_sPODG(Vdp, as_, qs_target, f_new, mask, lamda, intIds, weights, **kwargs)
+            dJ = J_prev - delta * omega * np.linalg.norm(dL_du) ** 2
+            if J < dJ:
+                J_opt = J
+                f_opt = f_new
+                print(f"Armijo iteration converged after {k + 1} steps")
+                return f_opt, J_opt, np.linalg.norm(dL_du), False, 0
+            elif J >= dJ or np.isnan(J):
+                if k == max_Armijo_iter - 1:
+                    J_opt = J
+                    f_opt = f_new
+                    print(f"Armijo iteration reached maximum limit thus exiting the Armijo loop......")
+                    return f_opt, J_opt, np.linalg.norm(dL_du), True, 1
+                else:
+                    if J == dJ:
+                        if verbose: print(f"J has started to saturate now so we reduce the omega = {omega}!",
+                                          f"Reducing omega at iter={k + 1}, with J={J}")
+                        omega = omega / 4
+                        count = count + 1
+                        if count > itr:
+                            J_opt = J
+                            f_opt = f_new
+                            print(
+                                f"Armijo iteration reached a point where J does not change thus exiting the Armijo loop......")
+                            return f_opt, J_opt, np.linalg.norm(dL_du), True, 0
+                    else:
+                        if verbose: print(f"No NANs found but step size omega = {omega} too large!",
+                              f"Reducing omega at iter={k + 1}")
+                        omega = omega / 4

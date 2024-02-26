@@ -12,6 +12,8 @@ from time import perf_counter
 import time
 
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use("TkAgg")
 
 # Problem variables
 Dimension = "1D"
@@ -39,7 +41,17 @@ n_c = Nxi // 10  # Number of controls
 f_tilde = np.zeros((n_c, wf.Nt))
 
 # Selection matrix for the control input
-psi, _, _ = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0, tilt_from=3*Nt//4)
+_, _, _, psi = ControlSelectionMatrix_advection(wf, n_c, shut_off_the_first_ncontrols=0, tilt_from=3*Nt//4)
+
+
+# plt.plot(psi[:, 0])
+# plt.plot(psi[:, 1])
+# plt.plot(psi[:, 2])
+# plt.plot(psi[:, 3])
+# plt.show()
+#
+# exit()
+
 
 
 #%% Assemble the linear operators
@@ -51,8 +63,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./test/"  # "./data/PODG/FOTR/normal/refine=100/Nm=50/"
-immpath = "./test/"  # "./plots/PODG_1D/FOTR/normal/refine=100/Nm=50/"
+impath = "test/"  # "./data/PODG/FOTR/normal/refine=100/Nm=50/"
+immpath = "test/"  # "./plots/PODG_1D/FOTR/normal/refine=100/Nm=50/"
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -62,7 +74,7 @@ sigma = np.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 100
+max_opt_steps = 300
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
@@ -291,3 +303,8 @@ if Dimension == "1D":
                           trunc_modes_primal_list,
                           trunc_modes_adjoint_list,
                           immpath=immpath)
+
+
+
+
+

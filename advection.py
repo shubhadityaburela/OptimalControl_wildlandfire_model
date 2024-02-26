@@ -225,10 +225,10 @@ class advection:
 
         return a
 
-    def sPOD_Galerkin_mat_primal(self, T_delta, V_p, A_p, psi, samples):
+    def sPOD_Galerkin_mat_primal(self, T_delta, V_p, A_p, psi, D, samples):
 
         # Construct V_delta and W_delta matrix
-        V_delta_primal, W_delta_primal = make_V_W_delta(V_p, T_delta, self.X, samples)
+        V_delta_primal, W_delta_primal = make_V_W_delta(V_p, T_delta, D, samples)
 
         # Construct LHS matrix
         LHS_matrix = make_LHS_mat_offline_primal(V_delta_primal, W_delta_primal)
@@ -258,7 +258,13 @@ class advection:
         # Prepare the online control matrix
         C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
 
-        return np.linalg.inv(M) @ (A @ a + C)
+        # print(np.linalg.cond(M, p='fro'))
+        if np.linalg.cond(M, p='fro') == np.inf:
+            res = np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(A @ a + C))
+        else:
+            res = np.linalg.solve(M, A @ a + C)
+
+        return res    # np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(A @ a + C))
 
     def TimeIntegration_primal_sPODG(self, lhs, rhs, c, a, f0, delta_s, ti_method="rk4"):
         if ti_method == "rk4":
@@ -278,10 +284,10 @@ class advection:
 
         return a
 
-    def sPOD_Galerkin_mat_adjoint(self, T_delta, V_a, A_a, samples):
+    def sPOD_Galerkin_mat_adjoint(self, T_delta, V_delta_primal, V_a, A_a, D, samples):
 
         # Construct V_delta and W_delta matrix
-        V_delta_adjoint, W_delta_adjoint = make_V_W_delta(V_a, T_delta, self.X, samples)
+        V_delta_adjoint, W_delta_adjoint = make_V_W_delta(V_a, T_delta, D, samples)
 
         # Construct LHS matrix
         LHS_matrix = make_LHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint)
@@ -289,10 +295,13 @@ class advection:
         # Construct RHS matrix
         RHS_matrix = make_RHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint, -A_a)
 
+        # Construct the target precomputed terms
+        Tar_matrix = make_target_term_matrices(V_delta_primal, V_delta_adjoint, W_delta_adjoint)
 
-        return V_delta_adjoint, W_delta_adjoint, LHS_matrix, RHS_matrix
 
-    def RHS_adjoint_sPODG(self, a, f, a_, lhs, rhs, Vdp, Vda, Wda, qs_target, ds):
+        return V_delta_adjoint, W_delta_adjoint, LHS_matrix, RHS_matrix, Tar_matrix
+
+    def RHS_adjoint_sPODG(self, a, f, a_, lhs, rhs, T_a, Vda, Wda, qs_target, ds):
 
         # Compute the interpolation weight and the interval in which the shift lies
         intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a_[-1])
@@ -307,11 +316,16 @@ class advection:
         A = make_RHS_mat_online_primal(rhs, Da, intervalIdx, weight)
 
         # Prepare the online control matrix
-        C = make_target_mat_online_primal(Vdp, Vda, Wda, qs_target, a_[:-1], Da, intervalIdx, weight)
+        C = make_target_mat_online_primal(T_a, Vda, Wda, qs_target, a_[:-1], Da, intervalIdx, weight)
 
-        return np.linalg.inv(M) @ (A @ a - C)
+        if np.linalg.cond(M, p='fro') == np.inf:
+            res = np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(A @ a - C))
+        else:
+            res = np.linalg.solve(M, A @ a - C)
 
-    def TimeIntegration_adjoint_sPODG(self, lhs, rhs, Vdp, Vda, Wda, qs_target, at_adj, f0, as_, delta_s, ti_method="rk4"):
+        return res
+
+    def TimeIntegration_adjoint_sPODG(self, lhs, rhs, T_a, Vda, Wda, qs_target, at_adj, f0, as_, delta_s, ti_method="rk4"):
         # Time loop
         if ti_method == "rk4":
             # Time loop
@@ -320,7 +334,7 @@ class advection:
 
             for n in range(1, self.Nt):
                 as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -(n + 1)],
-                                          -self.dt, as_[:, -(n + 1)], lhs, rhs, Vdp, Vda, Wda,
+                                          -self.dt, as_[:, -(n + 1)], lhs, rhs, T_a, Vda, Wda,
                                           qs_target[:, -(n + 1)], delta_s)
 
             return as_adj
