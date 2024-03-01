@@ -2,7 +2,7 @@ from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG
 from advection import advection
 from Plots import PlotFlow
-from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis
+from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis, calc_shift
 from Helper_sPODG import subsample, Shifts_1D, srPCA_1D, findIntervals, get_T, make_target_term_matrices, \
     central_FDMatrix
 from Costs import Calc_Cost_sPODG, Calc_Cost
@@ -51,8 +51,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/sPODG/FRTO/normal/refine=1/Nm=10/"  # For data
-immpath = "./plots/sPODG_1D/FRTO/normal/refine=1/Nm=10/"  # For plots
+impath = "test2/data/"  # For data
+immpath = "test2/plots/"  # For plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -64,7 +64,7 @@ sigma = np.load(impath + 'sigma.npy')
 max_opt_steps = 10
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
-omega = 1e-3  # initial step size for gradient update
+omega = 1  # initial step size for gradient update
 dL_du_min = 1e-4  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
@@ -72,9 +72,12 @@ np.save(impath + 'qs_target.npy', qs_target)
 J_list = []  # Collecting cost functional over the optimization steps
 dL_du_list = []  # Collecting the gradient over the optimization steps
 J_opt_list = []  # Collecting the optimal cost functional for plotting
+J_opt_FOM_list = []
 dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
 basis_refine_itr_list = []  # Collects the optimization step number at which the basis refinement is carried out
-trunc_modes_list = []  # Collects the truncated number of modes at each basis refinement step
+trunc_modes_primal_list = []  # Collects the truncated number of modes for primal at each basis refinement step
+trunc_modes_adjoint_list = []  # Collects the truncated number of modes for adjoint at each basis refinement step
+
 
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
@@ -86,7 +89,7 @@ if choose_selected_control:
     f = f_tilde
 
 #%% ROM Variables
-Num_sample = 200
+Num_sample = 400
 nth_step = 1
 Nm = 1
 
@@ -98,7 +101,9 @@ delta_s = subsample(wf.X, num_sample=Num_sample)
 # Extract transformation operators based on sub-sampled delta
 T_delta, _ = get_T(delta_s, wf.X, wf.t)
 
-stagnate = 0
+# Fix the shifts upfront
+delta_init = calc_shift(qs_org, q0, wf.X, wf.t)
+_, T = get_T(delta_init, wf.X, wf.t)
 
 start = time.time()
 # %%
@@ -114,24 +119,20 @@ for opt_step in range(max_opt_steps):
         '''
         qs = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 
-        # Compute the shifts from the FOM
-        delta_primal, _ = Shifts_1D(qs, wf.X, wf.t)
-
-        _, T = get_T(delta_primal, wf.X, wf.t)
         qs_s = T.reverse(qs)
         V, qs_s_POD = compute_red_basis(qs_s, Nm)
         err = np.linalg.norm(qs_s - qs_s_POD) / np.linalg.norm(qs_s)
         if verbose: print(f"Relative error for shifted primal: {err}, with Nm: {Nm}")
 
         # Construct the primal system matrices for the sPOD-Galerkin approach
-        Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, V, A_p, psi, samples=Num_sample)
+        Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, V, A_p, psi, D, samples=Num_sample)
 
         # Initial condition for dynamical simulation
         a_p = wf.InitialConditions_primal_sPODG(q0, delta_s, Vd_p)
-        # a_a = wf.InitialConditions_adjoint_sPODG(q0_adj)
+        a_a = wf.InitialConditions_adjoint_sPODG(q0_adj, delta_s, Vd_p)
 
         basis_refine_itr_list.append(opt_step)
-        trunc_modes_list.append(Nm)
+        trunc_modes_primal_list.append(Nm)
 
         time_odeint = perf_counter() - time_odeint
         if verbose: print("Basis refinement t_cpu = %1.3f" % time_odeint)
@@ -139,7 +140,7 @@ for opt_step in range(max_opt_steps):
     Forward calculation with the reduced system
     '''
     time_odeint = perf_counter()  # save timing
-    as_ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
+    as_, as_dot = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
@@ -150,38 +151,77 @@ for opt_step in range(max_opt_steps):
     # V_delta and W_delta matrices
     time_odeint = perf_counter()  # save timing
     intIds, weights = findIntervals(delta_s, as_[-1, :])
-    J = Calc_Cost_sPODG(Vd_p, as_, qs_target, f, lamda, intIds, weights, **kwargs)
+    J = Calc_Cost_sPODG(Vd_p, as_, qs_target, f, psi, lamda, intIds, weights, **kwargs)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
-    if opt_step == 0:
-        pass
-    else:
-        dJ = (J - J_list[-1]) / J_list[0]
-        if abs(dJ) == 0:
-            print("WARNING: dJ has turned 0...")
-            break
-    J_list.append(J)
 
 
-    # '''
-    # Backward calculation with the reduced system
-    # '''
-    # time_odeint = perf_counter()  # save timing
-    # as_adj = wf.TimeIntegration_adjoint_PODG(a_adjoint, f, as_, qs_target, ti_method=tm)
-    # time_odeint = perf_counter() - time_odeint
-    # if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
+    '''
+    Backward calculation with the reduced system
+    '''
+    time_odeint = perf_counter()  # save timing
+    as_adj = wf.TimeIntegration_adjoint_sPODG(a_a, f, as_, lhs_p, rhs_p, Vd_p, Wd_p, qs_target, D, A_p, psi, as_dot,
+                                              delta_s, ti_method=tm)
+    time_odeint = perf_counter() - time_odeint
+    if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
 
-    as_adj = np.ones_like(as_)
+
+
+
+
+
+
+
+
+
+
+    # as_online = as_[:Nm]
+    # as_adj_online = as_adj[:Nm]
+    # qs_adj = np.zeros_like(qs_target)
+    # for i in range(f.shape[1]):
+    #     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
+    #     qs[:, i] = V_delta @ as_online[:, i]
+    #     qs_adj[:, i] = V_delta @ as_adj_online[:, i]
+    # from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # import matplotlib
+    # matplotlib.use('TkAgg')
+    # import matplotlib.pyplot as plt
+    # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
+    # X_1D_grid = X_1D_grid.T
+    # t_grid = t_grid.T
+    # fig = plt.figure(figsize=(15, 5))
+    # ax1 = fig.add_subplot(131)
+    # im1 = ax1.pcolormesh(X_1D_grid, t_grid, qs, cmap='YlOrRd')
+    # ax1.axis('off')
+    # ax1.set_title(r"$q(x, t)$")
+    # divider = make_axes_locatable(ax1)
+    # cax = divider.append_axes('right', size='10%', pad=0.08)
+    # fig.colorbar(im1, cax=cax, orientation='vertical')
+    #
+    # ax2 = fig.add_subplot(132)
+    # im2 = ax2.pcolormesh(X_1D_grid, t_grid, qs_adj, cmap='YlOrRd')
+    # ax2.axis('off')
+    # ax2.set_title(r"$q(x, t)$")
+    # divider = make_axes_locatable(ax2)
+    # cax = divider.append_axes('right', size='10%', pad=0.08)
+    # fig.colorbar(im2, cax=cax, orientation='vertical')
+    # plt.show()
+
+
     '''
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, _, stag = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, Vd_p, a_p, as_, as_adj, qs_target, delta_s,
-                                                    J, intIds, weights, omega, lamda, max_Armijo_iter=18, wf=wf,
-                                                    delta=1e-4, ti_method=tm, verbose=verbose, **kwargs)
+    f, J_opt, dL_du, _, _ = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, Vd_p, a_p, as_, as_adj, qs_target, delta_s,
+                                                 J, psi, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
+                                                 delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
 
     # Save for plotting
+    qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
+    JJ = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
+
+    J_opt_FOM_list.append(JJ)
     J_opt_list.append(J_opt)
     dL_du_list.append(dL_du)
     dL_du_ratio_list.append(dL_du / dL_du_list[0])
@@ -212,14 +252,13 @@ for opt_step in range(max_opt_steps):
 
 
 # Compute the final state
-as__ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
+as__, _ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
 as_online = as__[:Nm]
 delta_online = as__[-1]
 qs = np.zeros_like(qs_target)
 
 as_adj_online = as_adj[:Nm]
 qs_adj = np.zeros_like(qs_target)
-
 intIds, weights = findIntervals(delta_s, delta_online)
 for i in range(f.shape[1]):
     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
@@ -259,7 +298,7 @@ f_opt = np.load(impath + 'f_opt.npy')
 np.save(impath + 'J_opt_list.npy', J_opt_list)
 np.save(impath + 'dL_du_ratio_list.npy', dL_du_ratio_list)
 np.save(impath + 'basis_refine_itr_list.npy', basis_refine_itr_list)
-np.save(impath + 'trunc_modes_primal_list.npy', trunc_modes_list)
+np.save(impath + 'trunc_modes_primal_list.npy', trunc_modes_primal_list)
 
 
 # Plot the results
@@ -272,7 +311,8 @@ if Dimension == "1D":
     pf.plot1D(f_opt, name="f_opt", immpath=immpath)
     pf.plot1D(sigma, name="sigma", immpath=immpath)
 
-    pf.plot1D_ROM_converg(J_opt_list, dL_du_ratio_list,
+    pf.plot1D_ROM_converg(J_opt_list, J_opt_FOM_list,
+                          dL_du_ratio_list,
                           basis_refine_itr_list,
-                          trunc_modes_list,
+                          trunc_modes_primal_list,
                           immpath=immpath)

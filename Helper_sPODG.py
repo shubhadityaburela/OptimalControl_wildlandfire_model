@@ -160,13 +160,10 @@ def get_T(delta_s, X, t):
     return trafo_1.shifts_pos, trafo_1
 
 
-def make_V_W_delta(U, T_delta, X, num_sample):
+def make_V_W_delta(U, T_delta, D, num_sample):
     V_delta = []
     W_delta = []
-    Nx = len(X)
-    dx = X[1] - X[0]
 
-    D = central_FDMatrix(order=6, Nx=Nx, dx=dx)
     for it in range(num_sample):
         V11 = T_delta[it] @ U
         V_delta.append(V11)
@@ -246,19 +243,18 @@ def findIntervalAndGiveInterpolationWeight_1D(xPoints, xStar):
 def make_Da(a):
     D_a = a[:len(a) - 1]
 
-    return D_a
+    return D_a[:, np.newaxis]
 
 
 def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
     M11 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
-    M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da[:, np.newaxis]
+    M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da
     M21 = M12.transpose()
-    M22 = (Da[:, np.newaxis].transpose() @ (weight * LHS_matrix[intervalIdx][2] +
-                                             (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da[:, np.newaxis]
-    M22_reg = np.where(M22 == 0, M22 + 1e-12, M22)
+    M22 = (Da.transpose() @ (weight * LHS_matrix[intervalIdx][2] +
+                                             (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da
     M = np.block([
         [M11, M12],
-        [M21, M22_reg]
+        [M21, M22]
     ])
 
     return M
@@ -266,7 +262,7 @@ def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
 
 def make_RHS_mat_online_primal(RHS_matrix, Da, intervalIdx, weight):
     A11 = weight * RHS_matrix[intervalIdx][0] + (1 - weight) * RHS_matrix[intervalIdx + 1][0]
-    A21 = Da[:, np.newaxis].transpose() @ (weight * RHS_matrix[intervalIdx][1] +
+    A21 = Da.transpose() @ (weight * RHS_matrix[intervalIdx][1] +
                                             (1 - weight) * RHS_matrix[intervalIdx + 1][1])
     A = np.block([
         [A11, np.zeros((A11.shape[0], 1))],
@@ -278,18 +274,7 @@ def make_RHS_mat_online_primal(RHS_matrix, Da, intervalIdx, weight):
 
 def make_control_mat_online_primal(f, C, Da, intervalIdx, weight):
     C1 = (weight * C[intervalIdx][0] + (1 - weight) * C[intervalIdx + 1][0]) @ f
-    C2 = Da[:, np.newaxis].transpose() @ ((weight * C[intervalIdx][1] + (1 - weight) * C[intervalIdx + 1][1]) @ f)
-
-    C = np.concatenate((C1, C2))
-
-    return C
-
-
-def make_target_mat_online_primal(Vdp, Vda, Wda, qs_target, a_, Da, intervalIdx, weight):
-
-    V_p = (weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1])
-    C1 = (weight * Vda[intervalIdx] + (1 - weight) * Vda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
-    C2 = Da[:, np.newaxis].transpose() @ (weight * Wda[intervalIdx] + (1 - weight) * Wda[intervalIdx + 1]).transpose() @ (V_p @ a_ - qs_target)
+    C2 = Da.transpose() @ ((weight * C[intervalIdx][1] + (1 - weight) * C[intervalIdx + 1][1]) @ f)
 
     C = np.concatenate((C1, C2))
 
@@ -318,3 +303,275 @@ def findIntervals(delta_s, delta):
         weights.append(weight)
 
     return intIds, weights
+
+
+################################# sPODG adjoint helper functions ##################################
+def D_dash(z, r):
+    arr = np.repeat(z, r)
+    return np.diag(arr)
+
+
+def DT_dash(arr):
+    return np.atleast_2d(arr)
+
+
+def dv_dt(Dfd, V, dz_dt):
+    return (Dfd @ V) * dz_dt
+
+
+def dvT_dt(Dfd, V, dz_dt):
+    return (Dfd @ V).transpose() * dz_dt
+
+
+def dw_dt(Dfd, W, dz_dt):
+    return (Dfd @ W) * dz_dt
+
+
+def dwT_dt(Dfd, W, dz_dt):
+    return (Dfd @ W).transpose() * dz_dt
+
+
+def dD_dt(a_dot):
+    return np.atleast_2d(a_dot).T
+
+
+def dDT_dt(a_dot):
+    return dD_dt(a_dot).transpose()
+
+
+def dN_dt(Dfd, V, W, dz_dt):
+    return dvT_dt(Dfd, V, dz_dt) @ W + V.transpose() @ dw_dt(Dfd, W, dz_dt)
+
+
+def dNT_dt(Dfd, V, W, dz_dt):
+    return dwT_dt(Dfd, W, dz_dt) @ V + W.transpose() @ dv_dt(Dfd, V, dz_dt)
+
+
+def dM1_dt(Dfd, V, dz_dt):
+    return dvT_dt(Dfd, V, dz_dt) @ V + V.transpose() @ dv_dt(Dfd, V, dz_dt)
+
+
+def dM2_dt(Dfd, W, dz_dt):
+    return dwT_dt(Dfd, W, dz_dt) @ W + W.transpose() @ dw_dt(Dfd, W, dz_dt)
+
+
+def V_dash(Dfd, V):
+    return Dfd @ V
+
+
+def VT_dash(Dfd, V):
+    return V_dash(Dfd, V).transpose()
+
+
+def W_dash(Dfd, W):
+    return Dfd @ W
+
+
+def WT_dash(Dfd, W):
+    return W_dash(Dfd, W).transpose()
+
+
+def N_dash(Dfd, V, W):
+    return VT_dash(Dfd, V) @ W + V.transpose() @ W_dash(Dfd, W)
+
+
+def NT_dash(Dfd, V, W):
+    return WT_dash(Dfd, W) @ V + W.transpose() @ V_dash(Dfd, V)
+
+
+def M1_dash(Dfd, V):
+    return VT_dash(Dfd, V) @ V + V.transpose() @ V_dash(Dfd, V)
+
+
+def M2_dash(Dfd, W):
+    return WT_dash(Dfd, W) @ W + W.transpose() @ W_dash(Dfd, W)
+
+
+def A1_dash(Dfd, V, A):
+    return VT_dash(Dfd, V) @ (A @ V) + (V.transpose() @ A) @ V_dash(Dfd, V)
+
+
+def A2_dash(Dfd, V, W, A):
+    return WT_dash(Dfd, W) @ (A @ V) + (W.transpose() @ A) @ V_dash(Dfd, V)
+
+
+def dv_dash_dt(Dfd, V, dz_dt):
+    return (Dfd @ V_dash(Dfd, V)) * dz_dt
+
+
+def dw_dash_dt(Dfd, W, dz_dt):
+    return (Dfd @ W_dash(Dfd, W)) * dz_dt
+
+
+def dvT_dash_dt(Dfd, V, dz_dt):
+    return (Dfd @ VT_dash(Dfd, V).transpose()).transpose() * dz_dt
+
+
+def dwT_dash_dt(Dfd, W, dz_dt):
+    return (Dfd @ WT_dash(Dfd, W).transpose()).transpose() * dz_dt
+
+
+def dM1_dash_dt(Dfd, V, dz_dt):
+    return dvT_dash_dt(Dfd, V, dz_dt) @ V + VT_dash(Dfd, V) @ dv_dt(Dfd, V, dz_dt) \
+        + dvT_dt(Dfd, V, dz_dt) @ V_dash(Dfd, V) + V.transpose() @ dv_dash_dt(Dfd, V, dz_dt)
+
+
+def dM2_dash_dt(Dfd, W, dz_dt):
+    return dwT_dash_dt(Dfd, W, dz_dt) @ W + WT_dash(Dfd, W) @ dw_dt(Dfd, W, dz_dt) \
+        + dwT_dt(Dfd, W, dz_dt) @ W_dash(Dfd, W) + W.transpose() @ dw_dash_dt(Dfd, W, dz_dt)
+
+
+def dN_dash_dt(Dfd, V, W, dz_dt):
+    return dvT_dash_dt(Dfd, V, dz_dt) @ W + VT_dash(Dfd, V) @ dw_dt(Dfd, W, dz_dt) \
+        + dvT_dt(Dfd, V, dz_dt) @ W_dash(Dfd, W) + V.transpose() @ dw_dash_dt(Dfd, W, dz_dt)
+
+
+# Mass matrix assembly
+def Q11(N, M1, z, r):
+    return N @ D_dash(z, r) + M1
+
+
+def Q12(N, D, M2, a_s, z, r):
+    return DT_dash(N.transpose() @ a_s + M2 @ (D @ z)) + (D.transpose() @ M2) @ D_dash(z, r) \
+        + D.transpose() @ N.transpose()
+
+
+def Q21(Dfd, N, D, V, W, a_s, z):
+    return M1_dash(Dfd, V) @ a_s + N_dash(Dfd, V, W) @ (D @ z) + N @ D
+
+
+def Q22(Dfd, M2, D, V, W, a_s, z):
+    return D.transpose() @ (NT_dash(Dfd, V, W) @ a_s) + D.transpose() @ (M2_dash(Dfd, W) @ (D @ z)) \
+        + D.transpose() @ (M2 @ D)
+
+
+def B11(Dfd, A1, V, W, dz_dt, z, r):
+    return dN_dt(Dfd, V, W, dz_dt) @ D_dash(z, r) + dM1_dt(Dfd, V, dz_dt) + A1
+
+
+def B12(Dfd, M2, N, A2, psi, D, V, W, a_dot, dz_dt, a_s, z, u, r):
+    mat1 = dNT_dt(Dfd, V, W, dz_dt)
+    mat2 = dM2_dt(Dfd, W, dz_dt)
+    mat3 = dD_dt(a_dot)
+    mat4 = dDT_dt(a_dot)
+    mat5 = D_dash(z, r)
+    mat6 = DT_dash(mat1 @ a_s + mat2 @ (D @ z) + M2 @ (mat3 @ z))
+    mat7 = DT_dash(A2 @ a_s)
+    mat8 = DT_dash(W.transpose() @ (psi @ u))
+
+    return mat6 + mat4 @ (M2 @ mat5) + (D.transpose() @ mat2) @ mat5 + \
+        mat4 @ N.transpose() + D.transpose() @ mat4 + mat7 + D.transpose() @ A2 + mat8
+
+
+def B21(Dfd, N, A, psi, D, V, W, a_dot, dz_dt, a_s, z, u):
+    mat1 = dM1_dash_dt(Dfd, V, dz_dt)
+    mat2 = dN_dash_dt(Dfd, V, W, dz_dt)
+    mat3 = N_dash(Dfd, V, W)
+    mat4 = dD_dt(a_dot)
+    mat5 = dN_dt(Dfd, V, W, dz_dt)
+    mat6 = dD_dt(a_dot)
+    mat7 = A1_dash(Dfd, V, A)
+    mat8 = VT_dash(Dfd, V)
+
+    return mat1 @ a_s + mat2 @ (D @ z) + mat3 @ (mat4 @ z) + mat5 @ D + N @ mat6 + mat7 @ a_s + mat8 @ (psi @ u)
+
+
+def B22(Dfd, A, M2, D, psi, V, W, a_dot, dz_dt, a_s, z, u):
+    mat1 = dDT_dt(a_dot)
+    mat2 = NT_dash(Dfd, V, W)
+    mat3 = M2_dash(Dfd, W)
+    mat4 = dM2_dash_dt(Dfd, W, dz_dt)
+    mat5 = dD_dt(a_dot)
+    mat6 = dM2_dt(Dfd, W, dz_dt)
+    mat7 = A2_dash(Dfd, V, W, A)
+    mat8 = WT_dash(Dfd, W)
+
+
+    return mat1 @ (mat2 @ a_s) + mat1 @ (mat3 @ (D @ z)) + D.transpose() @ (mat4 @ (D @ z)) \
+        + D.transpose() @ (mat3 @ (mat5 @ z)) + mat1 @ (M2 @ D) + D.transpose() @ (mat6 @ D) \
+        + D.transpose() @ (M2 @ mat5) + D.transpose() @ (mat7 @ a_s) + D.transpose() @ (mat8 @ (psi @ u))
+
+
+def C1(V, qs_target, a_s):
+    return a_s - V.transpose() @ qs_target
+
+
+def C2(Dfd, V, qs_target, a_s):
+    return np.atleast_1d((V_dash(Dfd, V) @ a_s).transpose() @ (V @ a_s - qs_target))
+
+
+def Z11(M1, N, z, r):
+    return M1 + N @ D_dash(z, r)
+
+
+def Z12(M2, N, D, a_s, z, r):
+    return DT_dash(N.transpose() @ a_s + M2 @ (D @ z)) + D.transpose() @ (N.transpose() + M2 @ D_dash(z, r))
+
+
+def Z21(Dfd, N, D, V, W, a_s, z):
+    return M1_dash(Dfd, V) @ a_s + N_dash(Dfd, V, W) @ (D @ z) + N @ D
+
+
+def Z22(Dfd, M2, D, V, W, a_s, z):
+    return DT_dash(NT_dash(Dfd, V, W) @ a_s + M2_dash(Dfd, W) @ (D @ z) + M2 @ D)
+
+
+
+def make_LHS_mat_online_adjoint(LHS_matrix, Da, a_, Dfd, Vdp, Wdp, intervalIdx, weight):
+    r = len(a_) - 1
+    V = weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1]
+    W = weight * Wdp[intervalIdx] + (1 - weight) * Wdp[intervalIdx + 1]
+    M1 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
+    M2 = weight * LHS_matrix[intervalIdx][2] + (1 - weight) * LHS_matrix[intervalIdx + 1][2]
+    N = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1])
+
+    Q1_1 = Q11(N, M1, a_[-1:], r)
+    Q1_2 = Q12(N, Da, M2, a_[:-1], a_[-1:], r)
+    Q2_1 = Q21(Dfd, N, Da, V, W, a_[:-1], a_[-1:])
+    Q2_2 = Q22(Dfd, M2, Da, V, W, a_[:-1], a_[-1:])
+
+    LHS = np.block([
+        [Q1_1.transpose(), Q1_2.transpose()],
+        [Q2_1.transpose(), Q2_2.transpose()]
+    ])
+
+    return LHS
+
+
+
+def make_RHS_mat_online_adjoint(RHS_matrix, LHS_matrix, A, psi, a_dot, dz_dt, Da, a_, Dfd, Vdp, Wdp, u, intervalIdx, weight):
+    r = len(a_) - 1
+    V = weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1]
+    W = weight * Wdp[intervalIdx] + (1 - weight) * Wdp[intervalIdx + 1]
+    M1 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
+    M2 = weight * LHS_matrix[intervalIdx][2] + (1 - weight) * LHS_matrix[intervalIdx + 1][2]
+    N = weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]
+
+    A1 = weight * RHS_matrix[intervalIdx][0] + (1 - weight) * RHS_matrix[intervalIdx + 1][0]
+    A2 = weight * RHS_matrix[intervalIdx][1] + (1 - weight) * RHS_matrix[intervalIdx + 1][1]
+
+    B1_1 = B11(Dfd, A1, V, W, dz_dt, a_[-1:], r)
+    B1_2 = B12(Dfd, M2, N, A2, psi, Da, V, W, a_dot, dz_dt, a_[:-1], a_[-1:], u, r)
+    B2_1 = B21(Dfd, N, A, psi, Da, V, W, a_dot, dz_dt, a_[:-1], a_[-1:], u)
+    B2_2 = B22(Dfd, A, M2, Da, psi, V, W, a_dot, dz_dt, a_[:-1], a_[-1:], u)
+
+    RHS = np.block([
+        [B1_1.transpose(), B1_2.transpose()],
+        [B2_1.transpose(), B2_2.transpose()]
+    ])
+
+    return RHS
+
+
+
+def make_target_mat_online_adjoint(a_, Dfd, Vdp, qs_target, intervalIdx, weight):
+
+    V = weight * Vdp[intervalIdx] + (1 - weight) * Vdp[intervalIdx + 1]
+    C1_1 = C1(V, qs_target, a_[:-1])
+    C2_1 = C2(Dfd, V, qs_target, a_[:-1])
+
+    C = np.concatenate((C1_1, C2_1))
+
+    return C
+
+
