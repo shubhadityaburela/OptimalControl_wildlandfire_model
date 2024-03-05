@@ -1,17 +1,24 @@
+"""
+This file is the other normal version. THIS SOLVES THE ADJOINT WITH FOM EQUATIONS. THIS CALCULATES THE SHIFT
+BASED ON INITIAL PROFILE AND KEEPS IT FIXED THROUGHOUT THE SIMULATION.
+"""
+
+
+
 from Coefficient_Matrix import CoefficientMatrix
-from Costs import Calc_Cost_PODG, Calc_Cost
-from Grads import Calc_Grad
-from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis
-from Update import Update_Control_PODG
+from Update import Update_Control_sPODG, Update_Control_sPODG_tmp
 from advection import advection
 from Plots import PlotFlow
+from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis, calc_shift
+from Helper_sPODG import subsample, Shifts_1D, srPCA_1D, findIntervals, get_T, make_target_term_matrices, \
+    central_FDMatrix
+from Costs import Calc_Cost_sPODG, Calc_Cost
 import sys
-import numpy as np
 import os
 from time import perf_counter
+from sklearn.utils.extmath import randomized_svd
+import numpy as np
 import time
-
-import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
@@ -19,7 +26,7 @@ Nxi = 200
 Neta = 1
 Nt = 400
 
-# solver initialization along with grid initialization
+# Wildfire solver initialization along with grid initialization
 wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
@@ -51,8 +58,9 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/PODG/FOTR/normal/refine=100/Nm=100/"
-immpath = "./plots/PODG_1D/FOTR/normal/refine=100/Nm=100/"
+impath = "./data/sPODG/FOTR3/normal/refine=1/Nm=13/"
+immpath = "./plots/sPODG_1D/FOTR3/normal/refine=1/Nm=13/"
+
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -60,44 +68,47 @@ np.save(impath + 'sigma.npy', sigma)
 np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
-
 #%% Optimal control
-max_opt_steps = 50000
+max_opt_steps = 20000
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
-dL_du_min = 1e-6  # Convergence criteria
+dL_du_min = 1e-4  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
 dL_du_list = []  # Collecting the gradient over the optimization steps
 J_opt_list = []  # Collecting the optimal cost functional for plotting
-J_opt_FOM_list = []  # Collecting the optimal cost functional with respect to FOM for plotting
+J_opt_FOM_list = []
 dL_du_ratio_list = []  # Collecting the ratio of gradients for plotting
-dL_du_FOM_ratio_list = []  # Just for convergence checking
 basis_refine_itr_list = []  # Collects the optimization step number at which the basis refinement is carried out
 trunc_modes_primal_list = []  # Collects the truncated number of modes for primal at each basis refinement step
 trunc_modes_adjoint_list = []  # Collects the truncated number of modes for adjoint at each basis refinement step
 
-
 # Initial conditions for both primal and adjoint are defined here as they only need to defined once.
 q0 = wf.InitialConditions_primal()
 q0_adj = wf.InitialConditions_adjoint()
-
 
 #%%
 # If we choose selected controls then we just switch
 if choose_selected_control:
     f = f_tilde
 
-# %% ROM variables
-# Modes for the ROM
-nth_step = 100  # Refine every nth step
-n_rom_primal = 100
-n_rom_adjoint = 100
+#%% ROM Variables
+Num_sample = 400
+nth_step = 1
+Nm = 5
 
-# Basis update condition
-stagnate = 0
+D = central_FDMatrix(order=6, Nx=wf.Nxi, dx=wf.dx)
+
+# Generate the shift samples
+delta_s = subsample(wf.X, num_sample=Num_sample)
+
+# Extract transformation operators based on sub-sampled delta
+T_delta, _ = get_T(delta_s, wf.X, wf.t)
+
+# Fix the shifts upfront
+delta_init = calc_shift(qs_org, q0, wf.X, wf.t)
 
 start = time.time()
 # %%
@@ -113,72 +124,50 @@ for opt_step in range(max_opt_steps):
         '''
         qs = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 
-        # Compute the reduced basis
-        V_p, qs_POD = compute_red_basis(qs, n_rom_primal)
-        err = np.linalg.norm(qs - qs_POD) / np.linalg.norm(qs)
-        if verbose: print(f"Relative error for primal: {err}, with n_rom_primal: {n_rom_primal}")
+        _, T = get_T(delta_init, wf.X, wf.t)
+        qs_s = T.reverse(qs)
+        if verbose: print("Transformation interpolation error =  %4.4e " % (np.linalg.norm(qs - T.apply(qs_s), ord="fro") / np.linalg.norm(qs, ord="fro")))
+        V_p, qs_s_POD = compute_red_basis(qs_s, Nm)
+        err = np.linalg.norm(qs_s - qs_s_POD) / np.linalg.norm(qs_s)
+        if verbose: print(f"Relative error for shifted primal: {err}, with Nm_primal: {Nm}")
+
+
+        # Construct the primal system matrices for the sPOD-Galerkin approach
+        Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, V_p, A_p, psi, D, samples=Num_sample)
 
         # Initial condition for dynamical simulation
-        a_p = wf.InitialConditions_primal_PODG(V_p, q0)
-
-        # Construct the primal system matrices for the POD-Galerkin approach
-        Ar_p, psir_p = wf.POD_Galerkin_mat_primal(A_p, V_p, psi)
+        a_p = wf.InitialConditions_primal_sPODG(q0, delta_s, Vd_p)
 
         basis_refine_itr_list.append(opt_step)
-        trunc_modes_primal_list.append(n_rom_primal)
+        trunc_modes_primal_list.append(Nm)
 
         time_odeint = perf_counter() - time_odeint
         if verbose: print("Forward basis refinement t_cpu = %1.3f" % time_odeint)
-
     '''
-    Forward calculation with reduced system
+    Forward calculation
     '''
     time_odeint = perf_counter()  # save timing
-    as_ = wf.TimeIntegration_primal_PODG(a_p, f, Ar_p, psir_p, ti_method=tm)
+    as_ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
-
 
     '''
     Objective and costs for control
     '''
+    # Compute the interpolation weight and the interval in which the shift lies corresponding to which we compute the
+    # V_delta and W_delta matrices
     time_odeint = perf_counter()  # save timing
-    J = Calc_Cost_PODG(V_p, as_, qs_target, f, psi, lamda, **kwargs)
+    intIds, weights = findIntervals(delta_s, as_[-1, :])
+    J = Calc_Cost_sPODG(Vd_p, as_, qs_target, f, psi, lamda, intIds, weights, **kwargs)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
 
 
-    if opt_step % nth_step == 0:
-        time_odeint = perf_counter()  # save timing
-        '''
-        Backward calculation with adjoint at intermediate steps
-        '''
-        qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, A_a, ti_method=tm, dict_args=lamda)
-
-        # Compute the reduced basis
-        V_a, qs_adj_POD = compute_red_basis(qs_adj, n_rom_adjoint)
-        err = np.linalg.norm(qs_adj - qs_adj_POD) / np.linalg.norm(qs_adj)
-        if verbose: print(f"Relative error for adjoint: {err}, with n_rom_adjoint: {n_rom_adjoint}")
-
-        # Initial condition for dynamical simulation
-        a_a = wf.InitialConditions_adjoint_PODG(V_a, q0_adj)
-
-        # Construct the adjoint system matrices for the POD-Galerkin approach
-        Ar_a, Tr_a, Tarr_a, psir_a = wf.POD_Galerkin_mat_adjoint(V_a, A_p, V_p, qs_target, psi)
-
-        trunc_modes_adjoint_list.append(n_rom_adjoint)
-
-        # Just for convergence
-        dL_du_FOM = np.linalg.norm(Calc_Grad(lamda, psi, f, qs_adj))
-        dL_du_FOM_ratio_list.append(dL_du_FOM)
-
-        time_odeint = perf_counter() - time_odeint
-        if verbose: print("Backward basis refinement t_cpu = %1.3f" % time_odeint)
     '''
-    Backward calculation with reduced system
+    Backward calculation with adjoint 
     '''
     time_odeint = perf_counter()  # save timing
-    as_adj = wf.TimeIntegration_adjoint_PODG(a_a, f, as_, Ar_a, Tr_a, Tarr_a, ti_method=tm)
+    qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, A_a, ti_method=tm, dict_args=lamda)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
@@ -186,10 +175,10 @@ for opt_step in range(max_opt_steps):
     '''
      Update Control
     '''
-    time_odeint = perf_counter()
-    f, J_opt, dL_du, _, stag = Update_Control_PODG(f, a_p, as_adj, qs_target, V_p, Ar_p, psir_p, psir_a, psi, J, omega,
-                                                   lamda, max_Armijo_iter=15, wf=wf, delta=1e-4, ti_method=tm,
-                                                   verbose=verbose, **kwargs)
+    time_odeint = perf_counter() - time_odeint
+    f, J_opt, dL_du, _, _ = Update_Control_sPODG_tmp(f, lhs_p, rhs_p, c_p, a_p, qs_adj, qs_target, delta_s, Vd_p, psi,
+                                                     J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
+                                                     delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
 
     # Save for plotting
     qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
@@ -204,8 +193,7 @@ for opt_step in range(max_opt_steps):
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     print(
-        f"J_opt : {J_opt}, ||dL_du|| = {dL_du}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]},"
-        f"||dL_du_FOM||_{opt_step} / ||dL_du||_0 = {dL_du_FOM / dL_du_list[0]}"
+        f"J_opt : {J_opt}, ||dL_du|| = {dL_du}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
     )
 
     # Convergence criteria
@@ -225,27 +213,27 @@ for opt_step in range(max_opt_steps):
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
-    elif dL_du_FOM / dL_du_list[0] < dL_du_min:
-        print("\n\n-------------------------------")
-        print(
-            f"Optimization converged with, "
-            f"J_opt : {J_opt}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du_FOM / dL_du_list[0]}, "
-            f"Number of basis refinements = {len(basis_refine_itr_list)}"
-        )
-        break
 
 
 # Compute the final state
-as__ = wf.TimeIntegration_primal_PODG(a_p, f, Ar_p, psir_p, ti_method=tm)
-qs = V_p @ as__
-qs_adj = V_a @ as_adj
+as__ = wf.TimeIntegration_primal_sPODG(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
+as_online = as__[:Nm]
+delta_online = as__[-1]
+qs = np.zeros_like(qs_target)
+intIds, weights = findIntervals(delta_s, delta_online)
+for i in range(f.shape[1]):
+    V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
+    qs[:, i] = V_delta @ as_online[:, i]
+
 f_opt = psi @ f
+
 
 # Compute the cost with the optimal control
 qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 J = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
 print("\n")
 print(f"J with respect to the optimal control for FOM: {J}")
+
 
 end = time.time()
 print("\n")
@@ -264,15 +252,13 @@ qs_opt = np.load(impath + 'qs_opt.npy')
 qs_adj_opt = np.load(impath + 'qs_adj_opt.npy')
 f_opt = np.load(impath + 'f_opt.npy')
 
+
 # Save the convergence lists
 np.save(impath + 'J_opt_list.npy', J_opt_list)
-np.save(impath + 'J_opt_FOM_list.npy', J_opt_FOM_list)
 np.save(impath + 'dL_du_ratio_list.npy', dL_du_ratio_list)
-np.save(impath + 'dL_du_FOM_ratio_list.npy', dL_du_FOM_ratio_list)
 np.save(impath + 'basis_refine_itr_list.npy', basis_refine_itr_list)
 np.save(impath + 'trunc_modes_primal_list.npy', trunc_modes_primal_list)
 np.save(impath + 'trunc_modes_adjoint_list.npy', trunc_modes_adjoint_list)
-
 
 
 # Plot the results

@@ -1,3 +1,8 @@
+"""
+This file is the adaptive version. NOT TO BE USED FOR TESTS.
+"""
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG
 from advection import advection

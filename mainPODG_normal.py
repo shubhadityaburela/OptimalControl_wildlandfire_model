@@ -1,3 +1,9 @@
+"""
+This file is the normal version. THIS IS THE STANDARD VERSION AND SHOULD BE USED FOR OUR TESTS
+"""
+
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Costs import Calc_Cost_PODG, Calc_Cost
 from Grads import Calc_Grad

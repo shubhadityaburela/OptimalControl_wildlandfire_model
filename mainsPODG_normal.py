@@ -1,3 +1,10 @@
+"""
+This file is the normal version. THIS IS THE STANDARD VERSION SHOULD BE USED FOR THE TESTS. THIS CALCULATES THE SHIFT
+BASED ON INITIAL PROFILE AND KEEPS IT FIXED THROUGHOUT THE SIMULATION.  If we want to change the shifts at every
+iteration then also it is quite easy to do it here itself with very minor modification.
+"""
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG, Update_Control_sPODG_tmp
 from advection import advection
@@ -15,12 +22,12 @@ import time
 
 # Problem variables
 Dimension = "1D"
-Nxi = 400
+Nxi = 200
 Neta = 1
 Nt = 400
 
 # Wildfire solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.6, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -51,8 +58,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "test_sPODG/data2/"  # For data
-immpath = "test_sPODG/plots2/"  # For plots
+impath = "test_sPODG/data3/"  # For data
+immpath = "test_sPODG/plots3/"  # For plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -61,7 +68,7 @@ np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 1000
+max_opt_steps = 200
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
@@ -87,7 +94,7 @@ if choose_selected_control:
     f = f_tilde
 
 #%% ROM Variables
-Num_sample = 400
+Num_sample = 200
 nth_step = 1
 Nm = 10
 
@@ -100,6 +107,7 @@ delta_s = subsample(wf.X, num_sample=Num_sample)
 T_delta, _ = get_T(delta_s, wf.X, wf.t)
 
 delta_init = calc_shift(qs_org, q0, wf.X, wf.t)
+_, T = get_T(delta_init, wf.X, wf.t)
 
 start = time.time()
 # %%
@@ -115,57 +123,20 @@ for opt_step in range(max_opt_steps):
         '''
         qs = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 
-        # Compute the shifts from the FOM
-        delta_primal = calc_shift(qs, q0, wf.X, wf.t)
-
-        _, T = get_T(delta_primal, wf.X, wf.t)
         qs_s = T.reverse(qs)
         if verbose: print("Transformation interpolation error =  %4.4e " % (np.linalg.norm(qs - T.apply(qs_s), ord="fro") / np.linalg.norm(qs, ord="fro")))
         V_p, qs_s_POD = compute_red_basis(qs_s, Nm)
         err = np.linalg.norm(qs_s - qs_s_POD) / np.linalg.norm(qs_s)
-        if verbose: print(f"Relative error for shifted primal: {err}, with Nm_primal: {Nm}")
-
-
-        # if opt_step % 1 == 0:
-        #     from mpl_toolkits.axes_grid1 import make_axes_locatable
-        #     import matplotlib
-        #     matplotlib.use('TkAgg')
-        #     import matplotlib.pyplot as plt
-        #     X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
-        #     X_1D_grid = X_1D_grid.T
-        #     t_grid = t_grid.T
-
-            # print(np.linalg.norm(delta_init[0] - delta_primal[0]) / np.linalg.norm(delta_init[0]))
-            # plt.plot(delta_primal[0], label='new')
-            # plt.plot(delta_init[0], label='init')
-            # plt.legend()
-            # plt.show()
-
-            # ax = plt.axes(projection='3d')
-            # ax.plot_surface(X_1D_grid, t_grid, qs, cmap='viridis')
-            # plt.show()
-
-            # fig = plt.figure(figsize=(15, 5))
-            # ax1 = fig.add_subplot(131)
-            # im1 = ax1.pcolormesh(X_1D_grid, t_grid, qs, cmap='YlOrRd')
-            # ax1.axis('off')
-            # ax1.set_title(r"$q(x, t)$")
-            # divider = make_axes_locatable(ax1)
-            # cax = divider.append_axes('right', size='10%', pad=0.08)
-            # fig.colorbar(im1, cax=cax, orientation='vertical')
-            #
-            # ax2 = fig.add_subplot(132)
-            # im2 = ax2.pcolormesh(X_1D_grid, t_grid, qs_s, cmap='YlOrRd')
-            # ax2.axis('off')
-            # ax2.set_title(r"$q(x, t)$")
-            # divider = make_axes_locatable(ax2)
-            # cax = divider.append_axes('right', size='10%', pad=0.08)
-            # fig.colorbar(im2, cax=cax, orientation='vertical')
-            # plt.show()
-
+        print(f"Relative error for shifted primal: {err}, with Nm_primal: {Nm}")
 
         # Construct the primal system matrices for the sPOD-Galerkin approach
         Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, V_p, A_p, psi, D, samples=Num_sample)
+
+
+        # np.save('lhs.npy', lhs_p)
+        # np.save('rhs.npy', rhs_p)
+        #
+        # exit()
 
         # Initial condition for dynamical simulation
         a_p = wf.InitialConditions_primal_sPODG(q0, delta_s, Vd_p)
@@ -184,18 +155,6 @@ for opt_step in range(max_opt_steps):
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
 
-
-    # import matplotlib
-    # matplotlib.use('TkAgg')
-    # import matplotlib.pyplot as plt
-    # plt.plot(as_[0, :], label='1')
-    # plt.plot(as_[1, :], label='2')
-    # plt.plot(as_[2, :], label='3')
-    # plt.plot(as_[3, :], label='4')
-    # plt.plot(as_[4, :], label='5')
-    # plt.legend()
-    # plt.show()
-
     '''
     Objective and costs for control
     '''
@@ -208,11 +167,34 @@ for opt_step in range(max_opt_steps):
     if verbose: print("Calc_Cost t_cpu = %1.6f" % time_odeint)
 
 
+    if opt_step % nth_step == 0:
+        time_odeint = perf_counter()  # save timing
+        '''
+        Backward calculation with adjoint at intermediate steps
+        '''
+        qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, A_a, ti_method=tm, dict_args=lamda)
+
+        qs_adj_s = T.reverse(qs_adj)
+        V_a, qs_adj_s_POD = compute_red_basis(qs_adj_s, Nm)
+        err = np.linalg.norm(qs_adj_s - qs_adj_s_POD) / np.linalg.norm(qs_adj_s)
+        print(f"Relative error for shifted adjoint: {err}, with Nm_adjoint: {Nm}")
+
+        # Construct the primal system matrices for the sPOD-Galerkin approach
+        Vd_a, Wd_a, lhs_a, rhs_a, T_a = wf.sPOD_Galerkin_mat_adjoint(T_delta, Vd_p, V_a, A_a, D, samples=Num_sample)
+
+        # Initial condition for dynamical simulation
+        a_a = wf.InitialConditions_adjoint_sPODG(Nm, as_)
+
+        trunc_modes_adjoint_list.append(Nm)
+
+        time_odeint = perf_counter() - time_odeint
+        if verbose: print("Backward basis refinement t_cpu = %1.3f" % time_odeint)
     '''
-    Backward calculation with adjoint 
+    Backward calculation with reduced system
     '''
     time_odeint = perf_counter()  # save timing
-    qs_adj = wf.TimeIntegration_adjoint(q0_adj, f, qs, qs_target, A_a, ti_method=tm, dict_args=lamda)
+    as_adj = wf.TimeIntegration_adjoint_sPODG(lhs_a, rhs_a, T_a, Vd_a, Wd_a, qs_target, a_a, f, as_,
+                                              delta_s, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
@@ -221,9 +203,12 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, _, _ = Update_Control_sPODG_tmp(f, lhs_p, rhs_p, c_p, a_p, qs_adj, qs_target, delta_s, Vd_p, psi,
-                                                     J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
-                                                     delta=1e-4, ti_method=tm, verbose=verbose, **kwargs)
+    f, J_opt, dL_du, _ = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
+                                                 J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
+                                                 delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
+    if verbose: print(
+        "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
+
 
     # Save for plotting
     qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
@@ -235,8 +220,6 @@ for opt_step in range(max_opt_steps):
     dL_du_ratio_list.append(dL_du / dL_du_list[0])
 
 
-    if verbose: print(
-        "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
     print(
         f"J_opt : {J_opt}, ||dL_du|| = {dL_du}, ||dL_du||_{opt_step} / ||dL_du||_0 = {dL_du / dL_du_list[0]}"
     )
@@ -269,6 +252,13 @@ intIds, weights = findIntervals(delta_s, delta_online)
 for i in range(f.shape[1]):
     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
     qs[:, i] = V_delta @ as_online[:, i]
+
+
+as_adj_online = as_adj[:Nm]
+qs_adj = np.zeros_like(qs_target)
+for i in range(f.shape[1]):
+    V_delta = weights[i] * Vd_a[intIds[i]] + (1 - weights[i]) * Vd_a[intIds[i] + 1]
+    qs_adj[:, i] = V_delta @ as_adj_online[:, i]
 
 f_opt = psi @ f
 
@@ -327,6 +317,40 @@ if Dimension == "1D":
 
 
 
+    # if opt_step % 5 == 0:
+    #     import matplotlib.pyplot as plt
+    #     import matplotlib
+    #     matplotlib.use('TkAgg')
+    #     delta = as_[-1, :]
+    #     plt.plot(delta, label='online')
+    #     plt.plot(delta_init[0], label='offline')
+    #     plt.legend()
+    #     plt.show()
+
+
+    # as_online = as_[:-1]
+    # delta_online = as_[-1]
+    # tmp = np.zeros_like(qs_target)
+    # intIds, weights = findIntervals(delta_s, delta_online)
+    # for i in range(f.shape[1]):
+    #     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
+    #     tmp[:, i] = V_delta @ as_online[:, i]
+    # from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # import matplotlib.pyplot as plt
+    # import matplotlib
+    # matplotlib.use('TkAgg')
+    # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
+    # X_1D_grid = X_1D_grid.T
+    # t_grid = t_grid.T
+    # fig = plt.figure(figsize=(15, 5))
+    # ax1 = fig.add_subplot(131)
+    # im1 = ax1.pcolormesh(X_1D_grid, t_grid, tmp, cmap='YlOrRd')
+    # ax1.axis('off')
+    # ax1.set_title(r"$q(x, t)$")
+    # divider = make_axes_locatable(ax1)
+    # cax = divider.append_axes('right', size='10%', pad=0.08)
+    # fig.colorbar(im1, cax=cax, orientation='vertical')
+    # plt.show()
 
 
 

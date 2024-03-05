@@ -1,3 +1,10 @@
+"""
+This file is the other normal version. THIS CONCATENATES THE PRIMAL AND ADJOINT TO COMPUTE THE COMMON BASIS.
+"""
+
+
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Costs import Calc_Cost_PODG, Calc_Cost
 from Grads import Calc_Grad

@@ -13,16 +13,29 @@ import sys
 import os
 
 
-def tensor_mat_prod(T, M):
-    prod = jnp.zeros((T.shape[1], T.shape[0]))
-    for i in range(T.shape[0]):
-        prod = prod.at[:, i].set(T.at[i, ...].get() @ M.at[:, i].get())
+def L2ScPr2(x, y, dt):
+    return integrate.trapezoid(integrate.trapezoid(x * y, axis=0), axis=0, dx=dt)
 
-    return prod
+
+def BrazilaiBorwein(fnew, fold, gnew, gold, itr, dt):
+    SY = L2ScPr2(fnew - fold, gnew - gold, dt)
+
+    if itr % 2 == 0:
+        YY = L2ScPr2(gnew - gold, gnew - gold, dt)
+        omega = YY / SY
+    else:
+        SS = L2ScPr2(fnew - fold, fnew - fold, dt)
+        omega = SY / SS
+
+    return omega
 
 
 def trapezoidal_integration(q, **kwargs):
     return integrate.trapezoid(integrate.trapezoid(np.square(q), axis=0, dx=kwargs['dx']), axis=0, dx=kwargs['dt'])
+
+
+def trapezoidal_integration_control(q, **kwargs):
+    return integrate.trapezoid(integrate.trapezoid(np.square(q), axis=0), axis=0, dx=kwargs['dt'])
 
 
 def integrate_cost(q, **kwargs):
@@ -213,9 +226,9 @@ def calc_shift(qs, qs_0, X, t):
 
 
 def compute_red_basis(qs, nm):
-    U, S, VT = randomized_svd(qs, n_components=nm, random_state=None)
+    U, S, VT = np.linalg.svd(qs, full_matrices=False)
 
-    return U, U.dot(np.diag(S).dot(VT))
+    return U[:, :nm], U[:, :nm].dot(np.diag(S[:nm]).dot(VT[:nm, :]))
 
 
 def Adjoint_Matrices():

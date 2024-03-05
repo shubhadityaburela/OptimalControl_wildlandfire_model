@@ -14,7 +14,8 @@ import math
 from Helper_sPODG import subsample, get_T, make_V_W_delta, make_LHS_mat_offline_primal, make_RHS_mat_offline_primal, \
     make_control_mat_offline_primal, make_control_update_mat, findIntervalAndGiveInterpolationWeight_1D, make_Da, \
     make_LHS_mat_online_primal, make_RHS_mat_online_primal, make_control_mat_online_primal, \
-    make_target_mat_online_primal, make_target_term_matrices
+    make_target_mat_online_primal, make_target_term_matrices, make_LHS_mat_offline_primal_red, \
+    make_RHS_mat_offline_primal_red, make_LHS_mat_online_primal_red, make_RHS_mat_online_primal_red
 
 from rk4 import rk4
 from bdf4 import bdf4
@@ -51,7 +52,7 @@ class advection:
         self.M = self.Nxi * self.Neta
 
         # Order of accuracy for the derivative matrices of the first and second order
-        self.firstderivativeOrder = "5thOrder"
+        self.firstderivativeOrder = "6thOrder"
 
         self.v_x = 0.4 * np.ones(self.Nt)
         self.v_y = np.zeros(self.Nt)
@@ -334,6 +335,130 @@ class advection:
 
             for n in range(1, self.Nt):
                 as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -(n + 1)],
+                                          -self.dt, as_[:, -(n + 1)], lhs, rhs, T_a, Vda, Wda,
+                                          qs_target[:, -(n + 1)], delta_s)
+
+            return as_adj
+
+    ######################################### FOTR sPOD (FURTHER REDUCED)#############################################
+    def InitialConditions_primal_sPODG_red(self, q0, ds, Vd):
+        z = 0
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], z)
+        V = weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]
+        a = V.transpose() @ q0
+        # Initialize the shifts with zero for online phase
+        a = np.concatenate((a, np.asarray([z])))
+
+        return a
+
+    def sPOD_Galerkin_mat_primal_red(self, T_delta, V_p, A_p, psi, D, samples):
+
+        # Construct V_delta and W_delta matrix
+        V_delta_primal, W_delta_primal = make_V_W_delta(V_p, T_delta, D, samples)
+
+        # Construct LHS matrix
+        LHS_matrix = make_LHS_mat_offline_primal_red(V_delta_primal, W_delta_primal)
+
+        # Construct RHS matrix
+        RHS_matrix = make_RHS_mat_offline_primal_red(V_delta_primal, W_delta_primal, A_p)
+
+        # Construct the control matrix
+        C_matrix = make_control_mat_offline_primal(V_delta_primal, W_delta_primal, psi)
+
+        return V_delta_primal, W_delta_primal, LHS_matrix, RHS_matrix, C_matrix
+
+    def RHS_primal_sPODG_red(self, a, f, lhs, rhs, c, ds):
+
+        # Compute the interpolation weight and the interval in which the shift lies
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a[-1])
+
+        # Assemble the dynamic matrix D(a)
+        Da = make_Da(a)
+
+        # Prepare the LHS side of the matrix using D(a)
+        M = make_LHS_mat_online_primal_red(lhs, Da)
+
+        # Prepare the RHS side of the matrix using D(a)
+        A = make_RHS_mat_online_primal_red(rhs, Da)
+
+        # Prepare the online control matrix
+        C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
+
+        # # print(np.linalg.cond(M, p='fro'))
+        # if np.linalg.cond(M, p='fro') == np.inf:
+        #     res = np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(A @ a + C))
+        # else:
+        #     res = np.linalg.solve(M, A @ a + C)
+
+        return np.linalg.solve(M, A @ a + C)
+
+    def TimeIntegration_primal_sPODG_red(self, lhs, rhs, c, a, f0, delta_s, ti_method="rk4"):
+        if ti_method == "rk4":
+            # Time loop
+            as_ = np.zeros((a.shape[0], self.Nt))
+            as_[:, 0] = a
+
+            for n in range(1, self.Nt):
+                as_[:, n] = rk4(self.RHS_primal_sPODG_red, as_[:, n - 1], f0[:, n], self.dt, lhs, rhs, c, delta_s)
+
+            return as_
+
+    def InitialConditions_adjoint_sPODG_red(self, Nm_adjoint, a_):
+        # Initialize the shift adjoint with zero for online phase
+        a = np.concatenate((np.zeros(Nm_adjoint), np.asarray([a_[-1, -1]])))
+
+        return a
+
+    def sPOD_Galerkin_mat_adjoint_red(self, T_delta, V_delta_primal, V_a, A_a, D, samples):
+
+        # Construct V_delta and W_delta matrix
+        V_delta_adjoint, W_delta_adjoint = make_V_W_delta(V_a, T_delta, D, samples)
+
+        # Construct LHS matrix
+        LHS_matrix = make_LHS_mat_offline_primal_red(V_delta_adjoint, W_delta_adjoint)
+
+        # Construct RHS matrix
+        RHS_matrix = make_RHS_mat_offline_primal_red(V_delta_adjoint, W_delta_adjoint, A_a)
+
+        # Construct the target precomputed terms
+        Tar_matrix = make_target_term_matrices(V_delta_primal, V_delta_adjoint, W_delta_adjoint)
+
+        return V_delta_adjoint, W_delta_adjoint, LHS_matrix, RHS_matrix, Tar_matrix
+
+    def RHS_adjoint_sPODG_red(self, a, f, a_, lhs, rhs, T_a, Vda, Wda, qs_target, ds):
+
+        # Compute the interpolation weight and the interval in which the shift lies
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a_[-1])
+
+        # Assemble the dynamic matrix D(a)
+        Da = make_Da(a)
+
+        # Prepare the LHS side of the matrix using D(a)
+        M = make_LHS_mat_online_primal_red(lhs, Da)
+
+        # Prepare the RHS side of the matrix using D(a)
+        A = make_RHS_mat_online_primal_red(rhs, Da)
+
+        # Prepare the online control matrix
+        C = make_target_mat_online_primal(T_a, Vda, Wda, qs_target, a_[:-1], Da, intervalIdx, weight)
+
+        if np.linalg.cond(M, p='fro') == np.inf:
+            res = np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(-A @ a - C))
+        else:
+            res = np.linalg.solve(M, -A @ a - C)
+
+        return res
+
+    def TimeIntegration_adjoint_sPODG_red(self, lhs, rhs, T_a, Vda, Wda, qs_target, at_adj, f0, as_, delta_s,
+                                          ti_method="rk4"):
+        # Time loop
+        if ti_method == "rk4":
+            # Time loop
+            as_adj = np.zeros((at_adj.shape[0], self.Nt))
+            as_adj[:, -1] = at_adj
+
+            for n in range(1, self.Nt):
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG_red, as_adj[:, -n], f0[:, -(n + 1)],
                                           -self.dt, as_[:, -(n + 1)], lhs, rhs, T_a, Vda, Wda,
                                           qs_target[:, -(n + 1)], delta_s)
 

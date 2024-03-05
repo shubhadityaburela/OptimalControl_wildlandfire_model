@@ -1,3 +1,9 @@
+"""
+This file is the partial adaptive version. THIS REFINES THE BASIS ADAPTIVELY BY LOOKING IF THE COST
+FUNCTIONAL IS NOT DECREASING OR REMAINING CONSTANT OVER THE OPTIMIZATION.
+"""
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG
 from advection import advection

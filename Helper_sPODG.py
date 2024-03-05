@@ -1,7 +1,9 @@
 import numpy as np
 from sklearn.utils.extmath import randomized_svd
 from scipy import interpolate
+from scipy.linalg import block_diag
 from scipy.optimize import root
+from scipy import sparse
 
 import sys
 import os
@@ -92,40 +94,27 @@ def srPCA_1D(q, delta, X, t, spod_iter):
 
 # Offline phase general functions for primal system
 def central_FDMatrix(order, Nx, dx):
-    from scipy.sparse import spdiags
-
-    # column vectors of all ones
-    enm2 = np.ones(Nx - 2)
-    enm4 = np.ones(Nx - 4)
-    enm6 = np.ones(Nx - 6)
-
-    # column vectors of all zeros
-    z4 = np.zeros(4)
-    z6 = np.zeros(6)
-    znm2 = np.zeros_like(enm2)
-
-    # determine the diagonal entries 'diagonals_D' and the corresponding
-    # diagonal indices 'indices' based on the specified order
     if order == 2:
         pass
     elif order == 4:
         pass
     elif order == 6:
-        diag3 = np.hstack([-enm6, z6])
-        diag2 = np.hstack([5, 9*enm6, 5, z4])
-        diag1 = np.hstack([-30, -40, -45*enm6, -40, -30, -60, 0])
-        diag0 = np.hstack([-60, znm2, 60])
-        diagonals_D = (1 / 60) * np.array([diag3, diag2, diag1, diag0,
-                                           -np.flipud(diag1), -np.flipud(diag2), -np.flipud(diag3)])
-        indices = [-3, -2, -1, 0, 1, 2, 3]
-    else:
-        print("Order of accuracy %i is not supported.", order)
-        exit()
+        Coeffs = np.array([-1, 9, -45, 0, 45, -9, 1]) / 60
+        diagonalLow = int(-(len(Coeffs) - 1) / 2)
+        diagonalUp = int(-diagonalLow)
 
-    # assemble the output matrix
-    D = spdiags(diagonals_D, indices, format="csr")
+        D_1 = sparse.csr_matrix(np.zeros((Nx, Nx), dtype=float))
 
-    return D * (1 / dx)
+        for k in range(diagonalLow, diagonalUp + 1):
+            D_1 = D_1 + Coeffs[k - diagonalLow] * sparse.csr_matrix(np.diag(np.ones(Nx - abs(k)), k))
+            if k < 0:
+                D_1 = D_1 + Coeffs[k - diagonalLow] * sparse.csr_matrix(
+                    np.diag(np.ones(abs(k)), Nx + k))
+            if k > 0:
+                D_1 = D_1 + Coeffs[k - diagonalLow] * sparse.csr_matrix(
+                    np.diag(np.ones(abs(k)), -Nx + k))
+
+    return D_1 * (1 / dx)
 
 
 def subsample(X, num_sample):
@@ -251,15 +240,15 @@ def findIntervalAndGiveInterpolationWeight_1D(xPoints, xStar):
 def make_Da(a):
     D_a = a[:len(a) - 1]
 
-    return D_a
+    return D_a[:, np.newaxis]
 
 
 def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
     M11 = weight * LHS_matrix[intervalIdx][0] + (1 - weight) * LHS_matrix[intervalIdx + 1][0]
-    M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da[:, np.newaxis]
+    M12 = (weight * LHS_matrix[intervalIdx][1] + (1 - weight) * LHS_matrix[intervalIdx + 1][1]) @ Da
     M21 = M12.transpose()
-    M22 = (Da[:, np.newaxis].transpose() @ (weight * LHS_matrix[intervalIdx][2] +
-                                             (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da[:, np.newaxis]
+    M22 = (Da.transpose() @ (weight * LHS_matrix[intervalIdx][2] +
+                                             (1 - weight) * LHS_matrix[intervalIdx + 1][2])) @ Da
     M = np.block([
         [M11, M12],
         [M21, M22]
@@ -275,7 +264,7 @@ def make_LHS_mat_online_primal(LHS_matrix, Da, intervalIdx, weight):
 
 def make_RHS_mat_online_primal(RHS_matrix, Da, intervalIdx, weight):
     A11 = weight * RHS_matrix[intervalIdx][0] + (1 - weight) * RHS_matrix[intervalIdx + 1][0]
-    A21 = Da[:, np.newaxis].transpose() @ (weight * RHS_matrix[intervalIdx][1] +
+    A21 = Da.transpose() @ (weight * RHS_matrix[intervalIdx][1] +
                                             (1 - weight) * RHS_matrix[intervalIdx + 1][1])
     A = np.block([
         [A11, np.zeros((A11.shape[0], 1))],
@@ -287,7 +276,7 @@ def make_RHS_mat_online_primal(RHS_matrix, Da, intervalIdx, weight):
 
 def make_control_mat_online_primal(f, C, Da, intervalIdx, weight):
     C1 = (weight * C[intervalIdx][0] + (1 - weight) * C[intervalIdx + 1][0]) @ f
-    C2 = Da[:, np.newaxis].transpose() @ ((weight * C[intervalIdx][1] + (1 - weight) * C[intervalIdx + 1][1]) @ f)
+    C2 = Da.transpose() @ ((weight * C[intervalIdx][1] + (1 - weight) * C[intervalIdx + 1][1]) @ f)
 
     C = np.concatenate((C1, C2))
 
@@ -301,7 +290,7 @@ def make_target_mat_online_primal(T_a, Vda, Wda, qs_target, a_, Da, intervalIdx,
     V_a = weight * Vda[intervalIdx] + (1 - weight) * Vda[intervalIdx + 1]
     W_a = weight * Wda[intervalIdx] + (1 - weight) * Wda[intervalIdx + 1]
     C1 = (VdaTVdp @ a_ - V_a.transpose() @ qs_target)
-    C2 = Da[:, np.newaxis].transpose() @ (WdaTVdp @ a_ - W_a.transpose() @ qs_target)
+    C2 = Da.transpose() @ (WdaTVdp @ a_ - W_a.transpose() @ qs_target)
 
     C = np.concatenate((C1, C2))
 
@@ -330,3 +319,52 @@ def findIntervals(delta_s, delta):
         weights.append(weight)
 
     return intIds, weights
+
+
+# FOTR reduced functions
+def make_LHS_mat_offline_primal_red(V_delta, W_delta):
+
+    # D(a) matrices are dynamic in nature thus need to be included in the time integration part
+    LHS11 = V_delta[0].transpose() @ V_delta[0]
+    LHS12 = V_delta[0].transpose() @ W_delta[0]
+    LHS22 = W_delta[0].transpose() @ W_delta[0]
+
+    LHS_mat = [LHS11, LHS12, LHS22]
+
+    return LHS_mat
+
+
+def make_RHS_mat_offline_primal_red(V_delta, W_delta, A):
+    A_1 = (V_delta[0].transpose() @ A) @ V_delta[0]
+    A_2 = (W_delta[0].transpose() @ A) @ V_delta[0]
+
+    RHS_mat = [A_1, A_2]
+
+    return RHS_mat
+
+
+def make_LHS_mat_online_primal_red(LHS_matrix, Da):
+    M11 = LHS_matrix[0]
+    M12 = LHS_matrix[1] @ Da
+    M21 = M12.transpose()
+    M22 = (Da.transpose() @ LHS_matrix[2]) @ Da
+
+    M = np.block([
+        [M11, M12],
+        [M21, M22]
+    ])
+
+    return M
+
+
+def make_RHS_mat_online_primal_red(RHS_matrix, Da):
+    A11 = RHS_matrix[0]
+    A21 = Da.transpose() @ RHS_matrix[1]
+
+    A = np.block([
+        [A11, np.zeros((A11.shape[0], 1))],
+        [A21, np.zeros((A21.shape[0], 1))]
+    ])
+
+    return A
+

@@ -11,7 +11,7 @@ def Calc_Cost(q, q_target, f, lamda, **kwargs):
 def Calc_Cost_PODG(V, as_, qs_target, f, psi, lamda, **kwargs):
     q_res = V @ as_ - qs_target
 
-    cost = 1 / 2 * (integrate_cost(q_res, **kwargs)) + (lamda['q_reg'] / 2) * (trapezoidal_integration(psi @ f, **kwargs))
+    cost = 1 / 2 * (integrate_cost(q_res, **kwargs)) + (lamda['q_reg'] / 2) * (trapezoidal_integration_control(f, **kwargs))
 
     return cost
 
@@ -24,6 +24,6 @@ def Calc_Cost_sPODG(V, as_, qs_target, f, psi, lamda, intIds, weights, **kwargs)
 
     q_res = q - qs_target
 
-    cost = 1 / 2 * (integrate_cost(q_res, **kwargs)) + (lamda['q_reg'] / 2) * (trapezoidal_integration(psi @ f, **kwargs))
+    cost = 1 / 2 * (integrate_cost(q_res, **kwargs)) + (lamda['q_reg'] / 2) * (trapezoidal_integration_control(f, **kwargs))
 
     return cost

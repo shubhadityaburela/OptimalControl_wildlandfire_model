@@ -1,3 +1,7 @@
+"""
+This file is the adaptive version. THIS IS NOT TO BE USED FOR OUR STUDIES
+"""
+
 from Coefficient_Matrix import CoefficientMatrix
 from Costs import Calc_Cost_PODG, Calc_Cost
 from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis
