@@ -1,3 +1,10 @@
+"""
+This file is the partial adaptive version. THIS REFINES THE BASIS ADAPTIVELY BY LOOKING IF THE COST
+FUNCTIONAL IS NOT DECREASING OR REMAINING CONSTANT OVER THE OPTIMIZATION.
+"""
+
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Costs import Calc_Cost_PODG, Calc_Cost
 from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis

@@ -1,3 +1,9 @@
+"""
+This file is the normal version. THIS IS THE STANDARD VERSION AND SHOULD BE USED FOR OUR TESTS
+"""
+
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Costs import Calc_Cost_PODG, Calc_Cost
 from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis
@@ -50,8 +56,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "tests/"
-immpath = "tests/"
+impath = "./data/PODG/FRTO/normal/refine=1/Nm=10/"
+immpath = "./plots/PODG_1D/FRTO/normal/refine=1/Nm=10/"
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -254,4 +260,3 @@ if Dimension == "1D":
                           basis_refine_itr_list,
                           trunc_modes_list,
                           immpath=immpath)
-

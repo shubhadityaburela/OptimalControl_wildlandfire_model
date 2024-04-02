@@ -111,6 +111,9 @@ class CoefficientMatrix:
             self.__DivCoefBR = np.array([[-1 / 30, 1 / 4, -1, 1 / 3, 1 / 2, -1 / 20],
                                          [1 / 20, -1 / 3, 1, -2, 13 / 12, 1 / 5],
                                          [-1 / 5, 5 / 4, -10 / 3, 5, -5, 137 / 60]])
+        elif orderDerivative == '6thOrder':  # This is a central finite difference stencil
+            self.__GradCoef = np.array([-1, 9, -45, 0, 45, -9, 1]) / 60
+            self.__DivCoef = np.array([0, 0, 0, 0, 0, 0, 0]) / 60
         elif orderDerivative == '7thOrder':
             self.__GradCoef = np.array([3, -28, 126, -420, 105, 252, -42, 4, 0]) / (140 * 3)
             self.__DivCoef = np.array([0, -4, 42, -252, -105, 420, -126, 28, -3]) / (140 * 3)
@@ -158,8 +161,6 @@ class CoefficientMatrix:
         D_1[D_1.shape[0] - a:D_1.shape[0], D_1.shape[1] - b:D_1.shape[1]] = BlockBR
 
         return D_1 / h
-
-
 
 
 

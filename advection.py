@@ -12,9 +12,11 @@ from Helper_sPODG import subsample, get_T, make_V_W_delta, make_LHS_mat_offline_
     make_control_mat_offline_primal, findIntervalAndGiveInterpolationWeight_1D, make_Da, \
     make_LHS_mat_online_primal, make_RHS_mat_online_primal, make_control_mat_online_primal, \
     make_target_term_matrices, make_LHS_mat_online_adjoint, make_RHS_mat_online_adjoint, \
-    make_target_mat_online_adjoint
+    make_target_mat_online_adjoint, make_LHS_mat_offline_primal_red, make_RHS_mat_offline_primal_red, \
+    make_LHS_mat_online_primal_red, make_RHS_mat_online_primal_red, make_LHS_mat_online_adjoint_red, \
+    make_RHS_mat_online_adjoint_red, make_target_mat_online_adjoint_newcost
 
-from rk4 import rk4, rk4_
+from rk4 import rk4, rk4_, rk4__
 from bdf4 import bdf4
 from bdf4_updated import bdf4_updated
 from implicit_midpoint import implicit_midpoint
@@ -49,7 +51,7 @@ class advection:
         self.M = self.Nxi * self.Neta
 
         # Order of accuracy for the derivative matrices of the first and second order
-        self.firstderivativeOrder = "5thOrder"
+        self.firstderivativeOrder = "6thOrder"
 
         self.v_x = 0.4 * np.ones(self.Nt)
         self.v_y = np.zeros(self.Nt)
@@ -102,7 +104,7 @@ class advection:
             qs[:, 0] = q
 
             for n in range(1, self.Nt):
-                qs[:, n] = rk4(self.RHS_primal, qs[:, n - 1], f0[:, n], self.dt, A, psi)
+                qs[:, n] = rk4(self.RHS_primal, qs[:, n - 1], f0[:, n - 1], self.dt, A, psi)
 
         return qs
 
@@ -128,8 +130,8 @@ class advection:
             qs_adj[:, -1] = q0_adj
 
             for n in range(1, self.Nt):
-                qs_adj[:, -(n + 1)] = rk4(self.RHS_adjoint, qs_adj[:, -n], f0[:, -(n + 1)], -self.dt, qs[:, -(n + 1)],
-                                          qs_target[:, -(n + 1)], A)
+                qs_adj[:, -(n + 1)] = rk4(self.RHS_adjoint, qs_adj[:, -n], f0[:, -n], -self.dt, qs[:, -n],
+                                          qs_target[:, -n], A)
 
         return qs_adj
 
@@ -151,7 +153,7 @@ class advection:
         qs[:, 0] = q
 
         for n in range(1, self.Nt):
-            qs[:, n] = rk4(self.RHS_primal_target, qs[:, n - 1], f0[:, n], self.dt, Mat, self.v_x_target[n],
+            qs[:, n] = rk4(self.RHS_primal_target, qs[:, n - 1], f0[:, n - 1], self.dt, Mat, self.v_x_target[n - 1],
                            self.v_y_target[n - 1])
 
         return qs
@@ -174,7 +176,7 @@ class advection:
             as_[:, 0] = a
 
             for n in range(1, self.Nt):
-                as_[:, n] = rk4(self.RHS_primal_PODG, as_[:, n - 1], f0[:, n], self.dt, Ar_p, psir_p)
+                as_[:, n] = rk4(self.RHS_primal_PODG, as_[:, n - 1], f0[:, n - 1], self.dt, Ar_p, psir_p)
 
         return as_
 
@@ -201,9 +203,9 @@ class advection:
             as_adj[:, -1] = at_adj
 
             for n in range(1, self.Nt):
-                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_PODG, as_adj[:, -n], f0[:, -(n + 1)], -self.dt,
-                                          as_[:, -(n + 1)],
-                                          Tarr_a[:, -(n + 1)],
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_PODG, as_adj[:, -n], f0[:, -n], -self.dt,
+                                          as_[:, -n],
+                                          Tarr_a[:, -n],
                                           Ar_a)
 
             return as_adj
@@ -263,13 +265,22 @@ class advection:
         if ti_method == "rk4":
             # Time loop
             as_ = np.zeros((a.shape[0], self.Nt))
-            as_dot = np.zeros((a.shape[0], self.Nt))
+            as_dot = np.zeros((4, a.shape[0], self.Nt))
 
             as_[:, 0] = a
             for n in range(1, self.Nt):
-                as_[:, n], as_dot[:, n] = rk4_(self.RHS_primal_sPODG, as_[:, n - 1], f0[:, n], self.dt, lhs, rhs, c, delta_s)
+                as_[:, n], a_dot = rk4_(self.RHS_primal_sPODG, as_[:, n - 1], f0[:, n - 1], self.dt, lhs, rhs, c,
+                                        delta_s)
+                as_dot[0, :, n - 1] = a_dot[0]
+                as_dot[1, :, n - 1] = a_dot[1]
+                as_dot[2, :, n - 1] = a_dot[2]
+                as_dot[3, :, n - 1] = a_dot[3]
 
-            as_dot[:, 0] = as_dot[:, 1]
+            _, a_dot = rk4_(self.RHS_primal_sPODG, as_[:, -1], f0[:, -1], self.dt, lhs, rhs, c, delta_s)
+            as_dot[0, :, -1] = a_dot[0]
+            as_dot[1, :, -1] = a_dot[1]
+            as_dot[2, :, -1] = a_dot[2]
+            as_dot[3, :, -1] = a_dot[3]
 
             return as_, as_dot
 
@@ -284,7 +295,7 @@ class advection:
         return a
 
 
-    def RHS_adjoint_sPODG(self, a, f, a_, Vdp, Wdp, lhsp, rhsp, qs_target, ds, Dfd, A, psi, a_dot, dz_dt):
+    def RHS_adjoint_sPODG(self, a, f, a_dot, z_dot, a_, Vdp, Wdp, lhsp, rhsp, qs_target, ds, Dfd, A, psi):
 
         # Compute the interpolation weight and the interval in which the shift lies
         intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a_[-1])
@@ -293,15 +304,15 @@ class advection:
         Da = make_Da(a_)
 
         # Prepare the LHS side of the matrix using D(a_)
-        M = make_LHS_mat_online_adjoint(lhsp, Da, a_, Dfd, Vdp, Wdp, intervalIdx, weight)
+        M = make_LHS_mat_online_adjoint(lhsp, Da, intervalIdx, weight)
 
         # Prepare the RHS side of the matrix using D(a_)
-        A = make_RHS_mat_online_adjoint(rhsp, lhsp, A, psi, a_dot, dz_dt, Da, a_, Dfd, Vdp, Wdp, f, intervalIdx, weight)
+        A = make_RHS_mat_online_adjoint(rhsp, lhsp, A, psi, a_dot, z_dot, Da, a_, Dfd, Vdp, Wdp, f, intervalIdx, weight)
 
         # Prepare the online control matrix
         C = make_target_mat_online_adjoint(a_, Dfd, Vdp, qs_target, intervalIdx, weight)
 
-        return np.linalg.solve(M, - A @ a - C)
+        return np.linalg.solve(M, -A @ a - C)
 
 
     def TimeIntegration_adjoint_sPODG(self, at_adj, f0, as_, lhsp, rhsp, Vdp, Wdp, qs_target, Dfd, A, psi, as_dot,
@@ -312,8 +323,178 @@ class advection:
             as_adj[:, -1] = at_adj
 
             for n in range(1, self.Nt):
-                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -(n + 1)],
-                                          -self.dt, as_[:, -(n + 1)], Vdp, Wdp, lhsp, rhsp, qs_target[:, -(n + 1)],
-                                          delta_s, Dfd, A, psi, as_dot[:-1, -(n + 1)], as_dot[-1:, -(n + 1)])
+                a_dot = [np.squeeze(as_dot[0, :-1, -n]),
+                         np.squeeze(as_dot[1, :-1, -n]),
+                         np.squeeze(as_dot[2, :-1, -n]),
+                         np.squeeze(as_dot[3, :-1, -n])]
+                z_dot = [np.squeeze(as_dot[0, -1:, -n]),
+                         np.squeeze(as_dot[1, -1:, -n]),
+                         np.squeeze(as_dot[2, -1:, -n]),
+                         np.squeeze(as_dot[3, -1:, -n])]
+                as_adj[:, -(n + 1)] = rk4__(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -n],
+                                            -self.dt, a_dot, z_dot, as_[:, -n], Vdp, Wdp, lhsp, rhsp, qs_target[:, -n],
+                                            delta_s, Dfd, A, psi)
+
+            return as_adj
+
+    ############################################### FRTO sPOD (simplified) ############################################
+    def InitialConditions_primal_sPODG_red(self, q0, ds, Vd):
+        z = 0
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], z)
+        V = weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]
+        a = V.transpose() @ q0
+        # Initialize the shifts with zero for online phase
+        a = np.concatenate((a, np.asarray([z])))
+
+        return a
+
+    def sPOD_Galerkin_mat_primal_red(self, T_delta, V_p, A_p, psi, D, samples):
+
+        # Construct V_delta and W_delta matrix
+        V_delta_primal, W_delta_primal = make_V_W_delta(V_p, T_delta, D, samples)
+
+        # Construct LHS matrix
+        LHS_matrix = make_LHS_mat_offline_primal_red(V_delta_primal, W_delta_primal)
+
+        # Construct RHS matrix
+        RHS_matrix = make_RHS_mat_offline_primal_red(V_delta_primal, W_delta_primal, A_p)
+
+        # Construct the control matrix
+        C_matrix = make_control_mat_offline_primal(V_delta_primal, W_delta_primal, psi)
+
+        return V_delta_primal, W_delta_primal, LHS_matrix, RHS_matrix, C_matrix
+
+    def RHS_primal_sPODG_red(self, a, f, lhs, rhs, c, ds):
+
+        # Compute the interpolation weight and the interval in which the shift lies
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a[-1])
+
+        # Assemble the dynamic matrix D(a)
+        Da = make_Da(a)
+
+        # Prepare the LHS side of the matrix using D(a)
+        M = make_LHS_mat_online_primal_red(lhs, Da)
+
+        # Prepare the RHS side of the matrix using D(a)
+        A = make_RHS_mat_online_primal_red(rhs, Da)
+
+        # Prepare the online control matrix
+        C = make_control_mat_online_primal(f, c, Da, intervalIdx, weight)
+
+        return np.linalg.solve(M, A @ a + C)
+
+    def TimeIntegration_primal_sPODG_red(self, lhs, rhs, c, a, f0, delta_s, ti_method="rk4"):
+        if ti_method == "rk4":
+            # Time loop
+            as_ = np.zeros((a.shape[0], self.Nt))
+            as_dot = np.zeros((4, a.shape[0], self.Nt))
+
+            as_[:, 0] = a
+            for n in range(1, self.Nt):
+                as_[:, n], a_dot = rk4_(self.RHS_primal_sPODG_red, as_[:, n - 1], f0[:, n - 1], self.dt, lhs, rhs, c, delta_s)
+                as_dot[0, :, n - 1] = a_dot[0]
+                as_dot[1, :, n - 1] = a_dot[1]
+                as_dot[2, :, n - 1] = a_dot[2]
+                as_dot[3, :, n - 1] = a_dot[3]
+
+            _, a_dot = rk4_(self.RHS_primal_sPODG_red, as_[:, -1], f0[:, -1], self.dt, lhs, rhs, c, delta_s)
+            as_dot[0, :, -1] = a_dot[0]
+            as_dot[1, :, -1] = a_dot[1]
+            as_dot[2, :, -1] = a_dot[2]
+            as_dot[3, :, -1] = a_dot[3]
+
+            return as_, as_dot
+
+    def InitialConditions_adjoint_sPODG_red(self, q0_adj, ds, Vd):
+        z = 0
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], z)
+        V = weight * Vd[intervalIdx] + (1 - weight) * Vd[intervalIdx + 1]
+        a = V.transpose() @ q0_adj
+        # Initialize the shifts with zero for online phase
+        a = np.concatenate((a, np.asarray([z])))
+
+        return a
+
+    def RHS_adjoint_sPODG_red(self, a, f, a_dot, z_dot, a_, Vdp, Wdp, lhsp, rhsp, qs_target, ds, Dfd, psi):
+
+        # Compute the interpolation weight and the interval in which the shift lies
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a_[-1])
+
+        # Assemble the dynamic matrix D(a_)
+        Da = make_Da(a_)
+
+        # Prepare the LHS side of the matrix using D(a_)
+        M = make_LHS_mat_online_adjoint_red(lhsp, Da)
+
+        # Prepare the RHS side of the matrix using D(a_)
+        A = make_RHS_mat_online_adjoint_red(rhsp, lhsp, psi, a_dot, z_dot, Da, a_, Dfd, Vdp, Wdp, f, intervalIdx, weight)
+
+        # Prepare the online control matrix
+        C = make_target_mat_online_adjoint(a_, Dfd, Vdp, qs_target, intervalIdx, weight)
+
+        return np.linalg.solve(M, -A @ a - C)
+
+    def TimeIntegration_adjoint_sPODG_red(self, at_adj, f0, as_, lhsp, rhsp, Vdp, Wdp, qs_target, Dfd, A, psi, as_dot,
+                                          delta_s, ti_method="rk4"):
+        if ti_method == "rk4":
+            # Time loop
+            as_adj = np.zeros((at_adj.shape[0], self.Nt))
+            as_adj[:, -1] = at_adj
+
+            for n in range(1, self.Nt):
+                a_dot = [np.squeeze(as_dot[0, :-1, -n]),
+                         np.squeeze(as_dot[1, :-1, -n]),
+                         np.squeeze(as_dot[2, :-1, -n]),
+                         np.squeeze(as_dot[3, :-1, -n])]
+                z_dot = [np.squeeze(as_dot[0, -1:, -n]),
+                         np.squeeze(as_dot[1, -1:, -n]),
+                         np.squeeze(as_dot[2, -1:, -n]),
+                         np.squeeze(as_dot[3, -1:, -n])]
+                as_adj[:, -(n + 1)] = rk4__(self.RHS_adjoint_sPODG_red, as_adj[:, -n], f0[:, -n],
+                                            -self.dt, a_dot, z_dot, as_[:, -n], Vdp, Wdp, lhsp, rhsp, qs_target[:, -n],
+                                            delta_s, Dfd, psi)
+
+            return as_adj
+
+    ########################### FRTO sPOD (simplified) new cost functional ########################
+
+    def RHS_adjoint_sPODG_newcost_red(self, a, f, a_dot, z_dot, a_, Vdp, Wdp, lhsp, rhsp, var_target, ds, Dfd, psi):
+
+        # Compute the interpolation weight and the interval in which the shift lies
+        intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], -a_[-1])
+
+        # Assemble the dynamic matrix D(a_)
+        Da = make_Da(a_)
+
+        # Prepare the LHS side of the matrix using D(a_)
+        M = make_LHS_mat_online_adjoint_red(lhsp, Da)
+
+        # Prepare the RHS side of the matrix using D(a_)
+        A = make_RHS_mat_online_adjoint_red(rhsp, lhsp, psi, a_dot, z_dot, Da, a_, Dfd, Vdp, Wdp, f, intervalIdx, weight)
+
+        # Prepare the online control matrix
+        C = make_target_mat_online_adjoint_newcost(a_, var_target)
+
+        return np.linalg.solve(M, -A @ a - C)
+
+    def TimeIntegration_adjoint_sPODG_newcost_red(self, at_adj, f0, as_, lhsp, rhsp, Vdp, Wdp, var_target, Dfd, A, psi, as_dot,
+                                          delta_s, ti_method="rk4"):
+        if ti_method == "rk4":
+            # Time loop
+            as_adj = np.zeros((at_adj.shape[0], self.Nt))
+            as_adj[:, -1] = at_adj
+
+            for n in range(1, self.Nt):
+                a_dot = [np.squeeze(as_dot[0, :-1, -n]),
+                         np.squeeze(as_dot[1, :-1, -n]),
+                         np.squeeze(as_dot[2, :-1, -n]),
+                         np.squeeze(as_dot[3, :-1, -n])]
+                z_dot = [np.squeeze(as_dot[0, -1:, -n]),
+                         np.squeeze(as_dot[1, -1:, -n]),
+                         np.squeeze(as_dot[2, -1:, -n]),
+                         np.squeeze(as_dot[3, -1:, -n])]
+                as_adj[:, -(n + 1)] = rk4__(self.RHS_adjoint_sPODG_newcost_red, as_adj[:, -n], f0[:, -n],
+                                            -self.dt, a_dot, z_dot, as_[:, -n], Vdp, Wdp, lhsp, rhsp, var_target[:, -n],
+                                            delta_s, Dfd, psi)
 
             return as_adj

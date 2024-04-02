@@ -25,11 +25,26 @@ def trapezoidal_integration(q, **kwargs):
     return integrate.trapezoid(integrate.trapezoid(np.square(q), axis=0, dx=kwargs['dx']), axis=0, dx=kwargs['dt'])
 
 
+def trapezoidal_integration_control(q, **kwargs):
+    return integrate.trapezoid(integrate.trapezoid(np.square(q), axis=0), axis=0, dx=kwargs['dt'])
+
+
+
 def integrate_cost(q, **kwargs):
     q[:, 0] = q[:, 0] / 2
     q[:, -1] = q[:, -1] / 2
     q = q.reshape((-1))
     return np.sum(np.square(q)) * kwargs.get('dx') * kwargs.get('dt')
+
+
+
+def integrate_cost_TA(q, **kwargs):
+    q[:, 0] = q[:, 0] / 2
+    q[:, -1] = q[:, -1] / 2
+    q = q.reshape((-1))
+    return np.sum(np.square(q)) * kwargs.get('dt')
+
+    # return integrate.trapezoid(integrate.trapezoid(np.square(a), axis=0), axis=0, dx=kwargs['dt'])
 
 
 def L2norm_ROM(q, **kwargs):
@@ -214,9 +229,9 @@ def calc_shift(qs, qs_0, X, t):
 
 
 def compute_red_basis(qs, nm):
-    U, S, VT = randomized_svd(qs, n_components=nm, random_state=None)
+    U, S, VT = np.linalg.svd(qs, full_matrices=False)
 
-    return U, U.dot(np.diag(S).dot(VT))
+    return U[:, :nm], U[:, :nm].dot(np.diag(S[:nm]).dot(VT[:nm, :]))
 
 
 def Adjoint_Matrices():
