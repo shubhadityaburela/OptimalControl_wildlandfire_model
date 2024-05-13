@@ -1,11 +1,12 @@
 """
-This file is the reduced normal version where we follow Philipp's advice and strike out a lot of terms from sPOD
-because of the special properties of advection equation and having just a single frame
+THIS VERSION SHOULD BE RUN FOR CREATING TESTS. This file is the reduced normal version where we follow Philipp's advice
+and strike out a lot of terms from sPOD because of the special properties of advection equation and having just a
+single frame
 """
 
 
 from Coefficient_Matrix import CoefficientMatrix
-from Update import Update_Control_sPODG
+from Update import Update_Control_sPODG, Update_Control_sPODG_red
 from advection import advection
 from Plots import PlotFlow
 from Helper import ControlSelectionMatrix_advection, Force_masking, compute_red_basis, calc_shift, BrazilaiBorwein
@@ -18,15 +19,16 @@ from time import perf_counter
 from sklearn.utils.extmath import randomized_svd
 import numpy as np
 import time
+import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 200
+Nxi = 400
 Neta = 1
-Nt = 400
+Nt = 300
 
 # Wildfire solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.8, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -57,8 +59,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "test_sPODG/data2/"  # For data
-immpath = "test_sPODG/plots2/"  # For plots
+impath = "./data/sPODG/FOTR/refine=50/Nm=15/"  # for data
+immpath = "./plots/sPODG/FOTR/refine=50/Nm=15/"  # for plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -67,7 +69,7 @@ np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 100
+max_opt_steps = 250
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
@@ -93,9 +95,9 @@ if choose_selected_control:
     f = f_tilde
 
 #%% ROM Variables
-Num_sample = 200
-nth_step = 1
-Nm = 10
+Num_sample = 400
+nth_step = 50
+Nm = 15
 
 D = central_FDMatrix(order=6, Nx=wf.Nxi, dx=wf.dx)
 
@@ -150,6 +152,12 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
+    # '''
+    # Use the shifts computed from reduced primal(including control) to shift the primal in stationary frame
+    # '''
+    # z = as_[-1, :]
+    # _, T = get_T(z[np.newaxis], wf.X, wf.t)
+
     '''
     Objective and costs for control
     '''
@@ -196,21 +204,12 @@ for opt_step in range(max_opt_steps):
     '''
      Update Control
     '''
-    # f_prev = f
-    # dL_du_prev = dL_du_mat
-
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, dL_du_mat = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
-                                                      J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
-                                                      delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
+    f, J_opt, dL_du, dL_du_mat, stag = Update_Control_sPODG_red(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
+                                                                J, intIds, weights, omega, lamda, max_Armijo_iter=50, wf=wf,
+                                                                delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
-
-
-
-    # # Brazilai-Borwein
-    # if opt_step != 0:
-    #     omega = BrazilaiBorwein(f, f_prev, dL_du_mat, dL_du_prev, opt_step, kwargs['dt'])
 
 
     # Save for plotting
@@ -244,6 +243,15 @@ for opt_step in range(max_opt_steps):
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
+    else:
+        if opt_step == 0:
+            pass
+        else:
+            dJ = (J_opt_list[-1] - J_opt_list[-2]) / J_opt_list[0]
+            if abs(dJ) == 0 or stag:
+                print(f"WARNING: dJ has turned close to 0... This means the Armijo cannot get "
+                      f"any better than this. Stagnated !!!")
+                break
 
 
 # Compute the final state

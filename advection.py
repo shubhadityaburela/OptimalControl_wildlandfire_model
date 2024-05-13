@@ -41,7 +41,7 @@ class advection:
         self.dt = None
 
         # Private variables
-        self.Lxi = 100
+        self.Lxi = 200
         self.Leta = 1
         self.Nxi = Nxi
         self.Neta = Neta
@@ -54,13 +54,13 @@ class advection:
         # Order of accuracy for the derivative matrices of the first and second order
         self.firstderivativeOrder = "6thOrder"
 
-        self.v_x = 0.4 * np.ones(self.Nt)
+        self.v_x = 0.48 * np.ones(self.Nt)
         self.v_y = np.zeros(self.Nt)
-        self.C = 0.4
+        self.C = 0.42
 
         self.v_x_target = self.v_x
         self.v_y_target = self.v_y
-        self.v_x_target[tilt_from:] = 0.9
+        self.v_x_target[tilt_from:] = 0.92
 
     def Grid(self):
         self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
@@ -82,7 +82,7 @@ class advection:
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            q = np.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
+            q = np.exp(-((self.X - self.Lxi / 12) ** 2) / 10)
 
         q = np.reshape(q, newshape=self.NN, order="F")
 
@@ -105,7 +105,7 @@ class advection:
             qs[:, 0] = q
 
             for n in range(1, self.Nt):
-                qs[:, n] = rk4(self.RHS_primal, qs[:, n - 1], f0[:, n], self.dt, A, psi)
+                qs[:, n] = rk4(self.RHS_primal, qs[:, n - 1], f0[:, n - 1], self.dt, A, psi)
 
         return qs
 
@@ -131,8 +131,8 @@ class advection:
             qs_adj[:, -1] = q0_adj
 
             for n in range(1, self.Nt):
-                qs_adj[:, -(n + 1)] = rk4(self.RHS_adjoint, qs_adj[:, -n], f0[:, -(n + 1)], -self.dt, qs[:, -(n + 1)],
-                                          qs_target[:, -(n + 1)], A)
+                qs_adj[:, -(n + 1)] = rk4(self.RHS_adjoint, qs_adj[:, -n], f0[:, -n], -self.dt, qs[:, -n],
+                                          qs_target[:, -n], A)
 
         return qs_adj
 
@@ -155,7 +155,7 @@ class advection:
         qs[:, 0] = q
 
         for n in range(1, self.Nt):
-            qs[:, n] = rk4(self.RHS_primal_target, qs[:, n - 1], f0[:, n], self.dt, Mat, self.v_x_target[n],
+            qs[:, n] = rk4(self.RHS_primal_target, qs[:, n - 1], f0[:, n - 1], self.dt, Mat, self.v_x_target[n - 1],
                            self.v_y_target[n - 1])
 
         return qs
@@ -177,7 +177,7 @@ class advection:
             as_[:, 0] = a
 
             for n in range(1, self.Nt):
-                as_[:, n] = rk4(self.RHS_primal_PODG, as_[:, n - 1], f0[:, n], self.dt, Ar_p, psir_p)
+                as_[:, n] = rk4(self.RHS_primal_PODG, as_[:, n - 1], f0[:, n - 1], self.dt, Ar_p, psir_p)
 
         return as_
 
@@ -203,9 +203,9 @@ class advection:
             as_adj[:, -1] = at_adj
 
             for n in range(1, self.Nt):
-                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_PODG, as_adj[:, -n], f0[:, -(n + 1)], -self.dt,
-                                          as_[:, -(n + 1)],
-                                          Tarr_a[:, -(n + 1)],
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_PODG, as_adj[:, -n], f0[:, -n], -self.dt,
+                                          as_[:, -n],
+                                          Tarr_a[:, -n],
                                           Ar_a, Tr_a)
 
             return as_adj
@@ -274,7 +274,7 @@ class advection:
             as_[:, 0] = a
 
             for n in range(1, self.Nt):
-                as_[:, n] = rk4(self.RHS_primal_sPODG, as_[:, n - 1], f0[:, n], self.dt, lhs, rhs, c, delta_s)
+                as_[:, n] = rk4(self.RHS_primal_sPODG, as_[:, n - 1], f0[:, n - 1], self.dt, lhs, rhs, c, delta_s)
 
             return as_
 
@@ -294,7 +294,7 @@ class advection:
         LHS_matrix = make_LHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint)
 
         # Construct RHS matrix
-        RHS_matrix = make_RHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint, -A_a)
+        RHS_matrix = make_RHS_mat_offline_primal(V_delta_adjoint, W_delta_adjoint, A_a)
 
         # Construct the target precomputed terms
         Tar_matrix = make_target_term_matrices(V_delta_primal, V_delta_adjoint, W_delta_adjoint)
@@ -320,9 +320,9 @@ class advection:
         C = make_target_mat_online_primal(T_a, Vda, Wda, qs_target, a_[:-1], Da, intervalIdx, weight)
 
         if np.linalg.cond(M, p='fro') == np.inf:
-            res = np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(A @ a - C))
+            res = np.linalg.solve(M.T.dot(M) + 1e-14 * np.identity(M.shape[1]), M.T.dot(-A @ a - C))
         else:
-            res = np.linalg.solve(M, A @ a - C)
+            res = np.linalg.solve(M, -A @ a - C)
 
         return res
 
@@ -334,13 +334,13 @@ class advection:
             as_adj[:, -1] = at_adj
 
             for n in range(1, self.Nt):
-                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -(n + 1)],
-                                          -self.dt, as_[:, -(n + 1)], lhs, rhs, T_a, Vda, Wda,
-                                          qs_target[:, -(n + 1)], delta_s)
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG, as_adj[:, -n], f0[:, -n],
+                                          -self.dt, as_[:, -n], lhs, rhs, T_a, Vda, Wda,
+                                          qs_target[:, -n], delta_s)
 
             return as_adj
 
-    ######################################### FOTR sPOD (FURTHER REDUCED)#############################################
+    ######################################### FOTR sPOD (FURTHER REDUCED) #############################################
     def InitialConditions_primal_sPODG_red(self, q0, ds, Vd):
         z = 0
         intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], z)
@@ -399,7 +399,7 @@ class advection:
             as_[:, 0] = a
 
             for n in range(1, self.Nt):
-                as_[:, n] = rk4(self.RHS_primal_sPODG_red, as_[:, n - 1], f0[:, n], self.dt, lhs, rhs, c, delta_s)
+                as_[:, n] = rk4(self.RHS_primal_sPODG_red, as_[:, n - 1], f0[:, n - 1], self.dt, lhs, rhs, c, delta_s)
 
             return as_
 
@@ -458,8 +458,8 @@ class advection:
             as_adj[:, -1] = at_adj
 
             for n in range(1, self.Nt):
-                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG_red, as_adj[:, -n], f0[:, -(n + 1)],
-                                          -self.dt, as_[:, -(n + 1)], lhs, rhs, T_a, Vda, Wda,
-                                          qs_target[:, -(n + 1)], delta_s)
+                as_adj[:, -(n + 1)] = rk4(self.RHS_adjoint_sPODG_red, as_adj[:, -n], f0[:, -n],
+                                          -self.dt, as_[:, -n], lhs, rhs, T_a, Vda, Wda,
+                                          qs_target[:, -n], delta_s)
 
             return as_adj

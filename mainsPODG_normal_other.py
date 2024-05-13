@@ -176,7 +176,7 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, _, _ = Update_Control_sPODG_tmp(f, lhs_p, rhs_p, c_p, a_p, qs_adj, qs_target, delta_s, Vd_p, psi,
+    f, J_opt, dL_du, _, stag = Update_Control_sPODG_tmp(f, lhs_p, rhs_p, c_p, a_p, qs_adj, qs_target, delta_s, Vd_p, psi,
                                                      J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
                                                      delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
 
@@ -213,6 +213,15 @@ for opt_step in range(max_opt_steps):
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
+    else:
+        if opt_step == 0:
+            pass
+        else:
+            dJ = (J_opt_list[-1] - J_opt_list[-2]) / J_opt_list[0]
+            if abs(dJ) == 0 or stag:
+                print(f"WARNING: dJ has turned close to 0... This means the Armijo cannot get "
+                      f"any better than this. Stagnated !!!")
+                break
 
 
 # Compute the final state

@@ -1,7 +1,7 @@
 """
-This file is the normal version. THIS IS THE STANDARD VERSION SHOULD BE USED FOR THE TESTS. THIS CALCULATES THE SHIFT
-BASED ON INITIAL PROFILE AND KEEPS IT FIXED THROUGHOUT THE SIMULATION.  If we want to change the shifts at every
-iteration then also it is quite easy to do it here itself with very minor modification.
+This file is the normal version. THIS CALCULATES THE SHIFT BASED ON INITIAL PROFILE AND KEEPS IT FIXED THROUGHOUT THE
+SIMULATION.  If we want to change the shifts at every iteration then also it is quite easy to do it here itself with
+very minor modification.
 """
 
 
@@ -132,12 +132,6 @@ for opt_step in range(max_opt_steps):
         # Construct the primal system matrices for the sPOD-Galerkin approach
         Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal(T_delta, V_p, A_p, psi, D, samples=Num_sample)
 
-
-        # np.save('lhs.npy', lhs_p)
-        # np.save('rhs.npy', rhs_p)
-        #
-        # exit()
-
         # Initial condition for dynamical simulation
         a_p = wf.InitialConditions_primal_sPODG(q0, delta_s, Vd_p)
 
@@ -154,6 +148,11 @@ for opt_step in range(max_opt_steps):
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
 
+    '''
+    Use the shifts computed from reduced primal(including control) to shift the primal in stationary frame
+    '''
+    z = as_[-1, :]
+    _, T = get_T(z[np.newaxis], wf.X, wf.t)
 
     '''
     Objective and costs for control
@@ -203,9 +202,9 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, _ = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
-                                                 J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
-                                                 delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
+    f, J_opt, dL_du, dL_du_mat, stag = Update_Control_sPODG(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
+                                                            J, intIds, weights, omega, lamda, max_Armijo_iter=15, wf=wf,
+                                                            delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
 
@@ -241,6 +240,15 @@ for opt_step in range(max_opt_steps):
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
+    else:
+        if opt_step == 0:
+            pass
+        else:
+            dJ = (J_opt_list[-1] - J_opt_list[-2]) / J_opt_list[0]
+            if abs(dJ) == 0 or stag:
+                print(f"WARNING: dJ has turned close to 0... This means the Armijo cannot get "
+                      f"any better than this. Stagnated !!!")
+                break
 
 
 # Compute the final state
