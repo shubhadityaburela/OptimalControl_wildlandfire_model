@@ -1,3 +1,11 @@
+
+"""
+This file is the simplified version where we have used the fact that we are solving an advection equation with
+periodic boundary conditions and only with a single frame. THIS SHOULD BE USED TO GENERATE OUR TEST RESULTS.
+"""
+
+
+
 from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG, Update_Control_sPODG_red
 from advection import advection
@@ -69,7 +77,7 @@ np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 100
+max_opt_steps = 5000
 verbose = True
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
@@ -99,7 +107,7 @@ if choose_selected_control:
 #%% ROM Variables
 Num_sample = 200
 nth_step = 1
-Nm = 9
+Nm = 13
 
 D = central_FDMatrix(order=6, Nx=wf.Nxi, dx=wf.dx)
 
@@ -317,6 +325,13 @@ qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 J = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
 print("\n")
 print(f"J with respect to the optimal control for FOM: {J}")
+
+
+
+# Compute the reconstruction error
+measure = np.linalg.norm(qs_target - qs) / np.linalg.norm(qs_target)
+print("\n")
+print(f"relative error measure for comparison: {measure}")
 
 
 end = time.time()

@@ -1,3 +1,9 @@
+
+"""
+This file is the normal version. This does not contain any simplifications done using the advection equation
+or the periodic boundary conditions
+"""
+
 from Coefficient_Matrix import CoefficientMatrix
 from Update import Update_Control_sPODG
 from advection import advection
