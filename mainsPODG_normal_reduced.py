@@ -22,21 +22,14 @@ import numpy as np
 import time
 
 
-
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
-
-
 # Problem variables
 Dimension = "1D"
-Nxi = 200
+Nxi = 400
 Neta = 1
-Nt = 400
+Nt = 700
 
 # Wildfire solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.8, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -67,8 +60,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "test2/data/"  # For data
-immpath = "test2/plots/"  # For plots
+impath = "./data/sPODG/FRTO/old_cost/refine=1/Nm=1/"  # for data
+immpath = "./plots/sPODG/FRTO/old_cost/refine=1/Nm=1/"  # for plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -77,11 +70,11 @@ np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 5000
-verbose = True
+max_opt_steps = 10000
+verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
-dL_du_min = 1e-4  # Convergence criteria
+dL_du_min = 1e-5  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
@@ -107,7 +100,7 @@ if choose_selected_control:
 #%% ROM Variables
 Num_sample = 200
 nth_step = 1
-Nm = 13
+Nm = 1
 
 D = central_FDMatrix(order=6, Nx=wf.Nxi, dx=wf.dx)
 
@@ -121,41 +114,12 @@ T_delta, _ = get_T(delta_s, wf.X, wf.t)
 delta_init = calc_shift(qs_org, q0, wf.X, wf.t)
 _, T = get_T(delta_init, wf.X, wf.t)
 
-#%%
-# Just for TESTING !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-delta_target = calc_shift(qs_target, q0, wf.X, wf.t)
-_, T_tar = get_T(delta_target, wf.X, wf.t)
-qs_target_s = T_tar.reverse(qs_target)
-V_tar, _ = compute_red_basis(qs_target_s, Nm)
-Vd_tar, Wd_tar, lhs_tar, rhs_tar, c_tar = wf.sPOD_Galerkin_mat_primal_red(T_delta, V_tar, A_p, psi, D,
-                                                                          samples=Num_sample)
-# Initial condition for dynamical simulation
-a_tar = wf.InitialConditions_primal_sPODG_red(q0, delta_s, Vd_tar)
-as_tar, _ = wf.TimeIntegration_primal_sPODG_red(lhs_tar, rhs_tar, c_tar, a_tar, f, delta_s, ti_method=tm)
-
-# as_online = as_tar[:Nm]
-# delta_online = as_tar[-1]
-# qs = np.zeros_like(qs_target)
-# intIds, weights = findIntervals(delta_s, delta_online)
-# for i in range(f.shape[1]):
-#     V_delta = weights[i] * Vd_tar[intIds[i]] + (1 - weights[i]) * Vd_tar[intIds[i] + 1]
-#     qs[:, i] = V_delta @ as_online[:, i]
-#
-#
-# fig = plt.figure(figsize=(15, 5))
-# ax1 = fig.add_subplot(131)
-# im1 = ax1.pcolormesh(qs.transpose(), cmap='YlOrRd')
-# ax1.axis('off')
-# ax1.set_title(r"$q(x, t)$")
-# plt.show()
-# exit()
-
 start = time.time()
 # %%
 for opt_step in range(max_opt_steps):
 
-    if verbose: print("\n-------------------------------")
-    if verbose: print("Optimization step: %d" % opt_step)
+    print("\n-------------------------------")
+    print("Optimization step: %d" % opt_step)
 
     if opt_step % nth_step == 0:
         time_odeint = perf_counter()  # save timing
@@ -167,7 +131,7 @@ for opt_step in range(max_opt_steps):
         qs_s = T.reverse(qs)
         V, qs_s_POD = compute_red_basis(qs_s, Nm)
         err = np.linalg.norm(qs_s - qs_s_POD) / np.linalg.norm(qs_s)
-        if verbose: print(f"Relative error for shifted primal: {err}, with Nm: {Nm}")
+        print(f"Relative error for shifted primal: {err}, with Nm: {Nm}")
 
         # Construct the primal system matrices for the sPOD-Galerkin approach
         Vd_p, Wd_p, lhs_p, rhs_p, c_p = wf.sPOD_Galerkin_mat_primal_red(T_delta, V, A_p, psi, D, samples=Num_sample)
@@ -188,6 +152,12 @@ for opt_step in range(max_opt_steps):
     as_, as_dot = wf.TimeIntegration_primal_sPODG_red(lhs_p, rhs_p, c_p, a_p, f, delta_s, ti_method=tm)
     time_odeint = perf_counter() - time_odeint
     if verbose: print("Forward t_cpu = %1.3f" % time_odeint)
+
+    # '''
+    # Use the shifts computed from reduced primal(including control) to shift the primal in stationary frame
+    # '''
+    # z = as_[-1, :]
+    # _, T = get_T(z[np.newaxis], wf.X, wf.t)
 
     '''
     Objective and costs for control
@@ -215,59 +185,13 @@ for opt_step in range(max_opt_steps):
     if verbose: print("Backward t_cpu = %1.3f" % time_odeint)
 
 
-
-
-    # as_p = as_[:-1]
-    # delta_p = as_[-1:]
-    # as_a = as_adj[:-1]
-    # delta_a = as_adj[-1:]
-    # fig = plt.figure(figsize=(12, 25))
-    # ax1 = fig.add_subplot(321)
-    # ax1.plot(wf.t, as_tar[0, :], label='1')
-    # # ax1.plot(wf.t, as_tar[1, :], label='2')
-    # # ax1.plot(wf.t, as_tar[2, :], label='3')
-    # # ax1.plot(wf.t, as_tar[3, :], label='4')
-    # # ax1.plot(wf.t, as_tar[4, :], label='5')
-    # # ax1.plot(wf.t, as_tar[5, :], label='6')
-    # ax1.legend()
-    #
-    # ax2 = fig.add_subplot(322)
-    # ax2.plot(wf.t, delta_target[0])
-    #
-    # ax3 = fig.add_subplot(323)
-    # ax3.plot(wf.t, as_p[0, :], label='1')
-    # # ax3.plot(wf.t, as_p[1, :], label='2')
-    # # ax3.plot(wf.t, as_p[2, :], label='3')
-    # # ax3.plot(wf.t, as_p[3, :], label='4')
-    # # ax3.plot(wf.t, as_p[4, :], label='5')
-    # # ax3.plot(wf.t, as_p[5, :], label='6')
-    # ax3.legend()
-    #
-    #
-    # ax4 = fig.add_subplot(324)
-    # ax4.plot(wf.t, delta_p[0])
-    #
-    # ax5 = fig.add_subplot(325)
-    # ax5.plot(wf.t, as_a[0, :], label='1')
-    # # ax5.plot(wf.t, as_a[1, :], label='2')
-    # # ax5.plot(wf.t, as_a[2, :], label='3')
-    # # ax5.plot(wf.t, as_a[3, :], label='4')
-    # # ax5.plot(wf.t, as_a[4, :], label='5')
-    # # ax5.plot(wf.t, as_a[5, :], label='6')
-    # ax5.legend()
-    #
-    # ax6 = fig.add_subplot(326)
-    # ax6.plot(wf.t, delta_a[0])
-    # plt.show()
-
-
     '''
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, _, _ = Update_Control_sPODG_red(f, lhs_p, rhs_p, c_p, Vd_p, a_p, as_, as_adj, qs_target, delta_s,
-                                                     J, psi, intIds, weights, omega, lamda, max_Armijo_iter=50, wf=wf,
-                                                     delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
+    f, J_opt, dL_du, _, stag = Update_Control_sPODG_red(f, lhs_p, rhs_p, c_p, Vd_p, a_p, as_, as_adj, qs_target, delta_s,
+                                                        J, psi, intIds, weights, omega, lamda, max_Armijo_iter=20, wf=wf,
+                                                        delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
 
     # Save for plotting
     qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
@@ -301,6 +225,16 @@ for opt_step in range(max_opt_steps):
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
+    else:
+        if opt_step == 0:
+            pass
+        else:
+            dJ = (J_opt_list[-1] - J_opt_list[-2]) / J_opt_list[0]
+            if abs(dJ) == 0 or stag:
+                print(f"WARNING: dJ has turned close to 0... This means the Armijo cannot get "
+                      f"any better than this. Stagnated !!!")
+                break
+
 
 
 # Compute the final state
@@ -325,13 +259,6 @@ qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)
 J = Calc_Cost(qs_opt_full, qs_target, f, lamda, **kwargs)
 print("\n")
 print(f"J with respect to the optimal control for FOM: {J}")
-
-
-
-# Compute the reconstruction error
-measure = np.linalg.norm(qs_target - qs) / np.linalg.norm(qs_target)
-print("\n")
-print(f"relative error measure for comparison: {measure}")
 
 
 end = time.time()
@@ -381,35 +308,45 @@ if Dimension == "1D":
 
 
 
-
-
-
-
-
-# qs_adj = np.zeros_like(qs_target)
-    # for i in range(f.shape[1]):
-    #     V_delta = weights[i] * Vd_p[intIds[i]] + (1 - weights[i]) * Vd_p[intIds[i] + 1]
-    #     qs[:, i] = V_delta @ as_online[:, i]
-    #     qs_adj[:, i] = V_delta @ as_adj_online[:, i]
-    # X_1D_grid, t_grid = np.meshgrid(wf.X, wf.t)
-    # X_1D_grid = X_1D_grid.T
-    # t_grid = t_grid.T
-    # fig = plt.figure(figsize=(15, 5))
-    # ax1 = fig.add_subplot(131)
-    # im1 = ax1.pcolormesh(X_1D_grid, t_grid, qs, cmap='YlOrRd')
-    # ax1.axis('off')
-    # ax1.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax1)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im1, cax=cax, orientation='vertical')
+# as_p = as_[:-1]
+    # delta_p = as_[-1:]
+    # as_a = as_adj[:-1]
+    # delta_a = as_adj[-1:]
+    # fig = plt.figure(figsize=(12, 25))
+    # ax1 = fig.add_subplot(321)
+    # ax1.plot(wf.t, as_tar[0, :], label='1')
+    # # ax1.plot(wf.t, as_tar[1, :], label='2')
+    # # ax1.plot(wf.t, as_tar[2, :], label='3')
+    # # ax1.plot(wf.t, as_tar[3, :], label='4')
+    # # ax1.plot(wf.t, as_tar[4, :], label='5')
+    # # ax1.plot(wf.t, as_tar[5, :], label='6')
+    # ax1.legend()
     #
-    # ax2 = fig.add_subplot(132)
-    # im2 = ax2.pcolormesh(X_1D_grid, t_grid, qs_adj, cmap='YlOrRd')
-    # ax2.axis('off')
-    # ax2.set_title(r"$q(x, t)$")
-    # divider = make_axes_locatable(ax2)
-    # cax = divider.append_axes('right', size='10%', pad=0.08)
-    # fig.colorbar(im2, cax=cax, orientation='vertical')
+    # ax2 = fig.add_subplot(322)
+    # ax2.plot(wf.t, delta_target[0])
+    #
+    # ax3 = fig.add_subplot(323)
+    # ax3.plot(wf.t, as_p[0, :], label='1')
+    # # ax3.plot(wf.t, as_p[1, :], label='2')
+    # # ax3.plot(wf.t, as_p[2, :], label='3')
+    # # ax3.plot(wf.t, as_p[3, :], label='4')
+    # # ax3.plot(wf.t, as_p[4, :], label='5')
+    # # ax3.plot(wf.t, as_p[5, :], label='6')
+    # ax3.legend()
+    #
+    #
+    # ax4 = fig.add_subplot(324)
+    # ax4.plot(wf.t, delta_p[0])
+    #
+    # ax5 = fig.add_subplot(325)
+    # ax5.plot(wf.t, as_a[0, :], label='1')
+    # # ax5.plot(wf.t, as_a[1, :], label='2')
+    # # ax5.plot(wf.t, as_a[2, :], label='3')
+    # # ax5.plot(wf.t, as_a[3, :], label='4')
+    # # ax5.plot(wf.t, as_a[4, :], label='5')
+    # # ax5.plot(wf.t, as_a[5, :], label='6')
+    # ax5.legend()
+    #
+    # ax6 = fig.add_subplot(326)
+    # ax6.plot(wf.t, delta_a[0])
     # plt.show()
-    # # exit()
-

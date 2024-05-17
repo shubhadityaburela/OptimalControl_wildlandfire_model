@@ -20,12 +20,12 @@ import matplotlib.pyplot as plt
 
 # Problem variables
 Dimension = "1D"
-Nxi = 200
+Nxi = 400
 Neta = 1
-Nt = 400
+Nt = 700
 
 # solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.8, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -56,8 +56,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "test5/data/"
-immpath = "test5/plots/"
+impath = "./data/PODG/FRTO/new_cost/Nm=40/"
+immpath = "./plots/PODG/FRTO/new_cost/Nm=40/"
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -67,11 +67,11 @@ sigma = np.load(impath + 'sigma.npy')
 
 
 #%% Optimal control
-max_opt_steps = 5000
+max_opt_steps = 2500
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
-dL_du_min = 1e-6  # Convergence criteria
+dL_du_min = 1e-5  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
@@ -94,18 +94,17 @@ q0_adj = wf.InitialConditions_adjoint()
 if choose_selected_control:
     f = f_tilde
 
-# %% ROM variables
-
+# %%
+# ROM variables
 # Modes for the ROM
-n_rom = 10
-
+n_rom = 40
 
 # %% Basis calculation at the very beginning
 
 # Compute the reduced basis based on the target state
 V, qs_POD = compute_red_basis(qs_target, n_rom)
 err = np.linalg.norm(qs_target - qs_POD) / np.linalg.norm(qs_target)
-if verbose: print(f"Relative error for target: {err}, with n_rom: {n_rom}")
+print(f"Relative error for target: {err}, with n_rom: {n_rom}")
 
 # Initial condition for dynamical simulation
 a_p = wf.InitialConditions_primal_PODG(V, q0)
@@ -151,7 +150,7 @@ for opt_step in range(max_opt_steps):
     '''
     time_odeint = perf_counter()
     f, J_opt, dL_du, _, stag = Update_Control_PODG_newcost(f, a_p, as_adj, Tarr_a, V, Ar_p, psir_p, psi, J, omega,
-                                                           lamda, max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
+                                                           lamda, max_Armijo_iter=20, wf=wf, delta=1e-2, ti_method=tm,
                                                            verbose=verbose, **kwargs)
 
     J_opt_list.append(J_opt)
@@ -182,6 +181,15 @@ for opt_step in range(max_opt_steps):
             f"Number of basis refinements = {len(basis_refine_itr_list)}"
         )
         break
+    else:
+        if opt_step == 0:
+            pass
+        else:
+            dJ = (J_opt_list[-1] - J_opt_list[-2]) / J_opt_list[0]
+            if abs(dJ) == 0 or stag:
+                print(f"WARNING: dJ has turned close to 0... This means the Armijo cannot get "
+                      f"any better than this. Stagnated !!!")
+                break
 
 
 
@@ -191,10 +199,6 @@ qs = V @ as__
 qs_adj = V @ as_adj
 f_opt = psi @ f
 
-# Compute the reconstruction error
-measure = np.linalg.norm(qs_target - qs) / np.linalg.norm(qs_target)
-print("\n")
-print(f"relative error measure for comparison: {measure}")
 
 end = time.time()
 print("\n")

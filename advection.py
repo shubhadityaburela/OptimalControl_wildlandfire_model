@@ -40,7 +40,7 @@ class advection:
         self.dt = None
 
         # Private variables
-        self.Lxi = 100
+        self.Lxi = 100   # 200   # 100
         self.Leta = 1
         self.Nxi = Nxi
         self.Neta = Neta
@@ -53,13 +53,13 @@ class advection:
         # Order of accuracy for the derivative matrices of the first and second order
         self.firstderivativeOrder = "6thOrder"
 
-        self.v_x = 0.4 * np.ones(self.Nt)
+        self.v_x = 0.5 * np.ones(self.Nt)   # 0.48  # 0.4
         self.v_y = np.zeros(self.Nt)
-        self.C = 0.4
+        self.C = 1.0    # 0.42  # 0.4
 
         self.v_x_target = self.v_x
         self.v_y_target = self.v_y
-        self.v_x_target[tilt_from:] = 0.9
+        self.v_x_target[tilt_from:] = 1.0  # 0.92    # 0.9
 
     def Grid(self):
         self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
@@ -81,7 +81,7 @@ class advection:
 
     def InitialConditions_primal(self):
         if self.Neta == 1:
-            q = np.exp(-((self.X - self.Lxi / 8) ** 2) / 10)
+            q = np.exp(-((self.X - self.Lxi / 12) ** 2) / 7)   # 8, 10
 
         q = np.reshape(q, newshape=self.NN, order="F")
 
