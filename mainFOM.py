@@ -12,12 +12,12 @@ import time
 
 # Problem variables
 Dimension = "1D"
-Nxi = 200
+Nxi = 400
 Neta = 1
-Nt = 400
+Nt = 700
 
 # solver initialization along with grid initialization
-wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.3, tilt_from=3*Nt//4)
+wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.8, tilt_from=3*Nt//4)
 wf.Grid()
 tm = "rk4"  # Time stepping method
 kwargs = {
@@ -48,8 +48,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/FOM/FOTR/coarse/"   # Storing data
-immpath = "./plots/FOM_1D/FOTR/coarse/"  # Storing plots
+impath = "./data/FOM/FOTR/"   # Storing data
+immpath = "./plots/FOM/FOTR/"  # Storing plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -58,11 +58,11 @@ np.save(impath + 'qs_org.npy', qs_org)
 sigma = np.load(impath + 'sigma.npy')
 
 #%% Optimal control
-max_opt_steps = 50000
+max_opt_steps = 250
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
-dL_du_min = 1e-6  # Convergence criteria
+dL_du_min = 1e-5  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
@@ -126,7 +126,7 @@ for opt_step in range(max_opt_steps):
     '''
     time_odeint = perf_counter() - time_odeint
     f, J_opt, dL_du = Update_Control(f, q0, qs_adj, qs_target, psi, A_p, J, omega, lamda,
-                                     max_Armijo_iter=18, wf=wf, delta=1e-4, ti_method=tm,
+                                     max_Armijo_iter=20, wf=wf, delta=1e-2, ti_method=tm,
                                      verbose=verbose, **kwargs)
 
     # Save for plotting

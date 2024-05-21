@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 Dimension = "1D"
 Nxi = 400
 Neta = 1
-Nt = 300
+Nt = 700
 
 # Wildfire solver initialization along with grid initialization
 wf = advection(Nxi=Nxi, Neta=Neta if Dimension == "1D" else Nxi, timesteps=Nt, cfl=0.8, tilt_from=3*Nt//4)
@@ -59,8 +59,8 @@ A_p = - (wf.v_x[0] * Mat.Grad_Xi_kron + wf.v_y[0] * Mat.Grad_Eta_kron)
 A_a = A_p.transpose()
 
 #%% Solve for sigma
-impath = "./data/sPODG/FOTR/refine=50/Nm=15/"  # for data
-immpath = "./plots/sPODG/FOTR/refine=50/Nm=15/"  # for plots
+impath = "./data/sPODG/FOTR/refine=1/Nm=1/"  # for data
+immpath = "./plots/sPODG/FOTR/refine=1/Nm=1/"  # for plots
 os.makedirs(impath, exist_ok=True)
 qs_org = wf.TimeIntegration_primal(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 sigma = Force_masking(qs_org, wf.X, wf.Y, wf.t, dim=Dimension)
@@ -73,7 +73,7 @@ max_opt_steps = 250
 verbose = False
 lamda = {'q_reg': 1e-3}  # weights and regularization parameter    # Lower the value of lamda means that we want a stronger forcing term. However higher its value we want weaker control
 omega = 1  # initial step size for gradient update
-dL_du_min = 1e-4  # Convergence criteria
+dL_du_min = 1e-5  # Convergence criteria
 f = np.zeros((wf.Nxi * wf.Neta, wf.Nt))  # Initial guess for the forcing term
 qs_target = wf.TimeIntegration_primal_target(wf.InitialConditions_primal(), f_tilde, A_p, psi, ti_method=tm)
 np.save(impath + 'qs_target.npy', qs_target)
@@ -95,9 +95,9 @@ if choose_selected_control:
     f = f_tilde
 
 #%% ROM Variables
-Num_sample = 400
-nth_step = 50
-Nm = 15
+Num_sample = 200
+nth_step = 1
+Nm = 9
 
 D = central_FDMatrix(order=6, Nx=wf.Nxi, dx=wf.dx)
 
@@ -205,12 +205,11 @@ for opt_step in range(max_opt_steps):
      Update Control
     '''
     time_odeint = perf_counter() - time_odeint
-    f, J_opt, dL_du, dL_du_mat, stag = Update_Control_sPODG_red(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
-                                                                J, intIds, weights, omega, lamda, max_Armijo_iter=50, wf=wf,
+    f, J_opt, dL_du, _, stag = Update_Control_sPODG_red(f, lhs_p, rhs_p, c_p, a_p, as_adj, qs_target, delta_s, Vd_p, Vd_a, psi,
+                                                                J, intIds, weights, omega, lamda, max_Armijo_iter=20, wf=wf,
                                                                 delta=1e-2, ti_method=tm, verbose=verbose, **kwargs)
     if verbose: print(
         "Update Control t_cpu = %1.3f" % (perf_counter() - time_odeint))
-
 
     # Save for plotting
     qs_opt_full = wf.TimeIntegration_primal(q0, f, A_p, psi, ti_method=tm)

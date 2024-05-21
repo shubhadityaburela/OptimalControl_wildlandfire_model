@@ -41,7 +41,7 @@ class advection:
         self.dt = None
 
         # Private variables
-        self.Lxi = 200
+        self.Lxi = 100
         self.Leta = 1
         self.Nxi = Nxi
         self.Neta = Neta
@@ -54,13 +54,13 @@ class advection:
         # Order of accuracy for the derivative matrices of the first and second order
         self.firstderivativeOrder = "6thOrder"
 
-        self.v_x = 0.48 * np.ones(self.Nt)
+        self.v_x = 0.5 * np.ones(self.Nt)
         self.v_y = np.zeros(self.Nt)
-        self.C = 0.42
+        self.C = 1.0
 
         self.v_x_target = self.v_x
         self.v_y_target = self.v_y
-        self.v_x_target[tilt_from:] = 0.92
+        self.v_x_target[tilt_from:] = 1.0
 
     def Grid(self):
         self.X = np.arange(1, self.Nxi + 1) * self.Lxi / self.Nxi
@@ -340,7 +340,7 @@ class advection:
 
             return as_adj
 
-    ######################################### FOTR sPOD (FURTHER REDUCED) #############################################
+    ######################################### FOTR sPOD (REDUCED) #############################################
     def InitialConditions_primal_sPODG_red(self, q0, ds, Vd):
         z = 0
         intervalIdx, weight = findIntervalAndGiveInterpolationWeight_1D(ds[2], z)
